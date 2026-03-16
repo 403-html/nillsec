@@ -3,6 +3,7 @@ package vault_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/403-html/nillsec/vault"
@@ -26,9 +27,11 @@ func TestInitCreatesVaultFile(t *testing.T) {
 	if info.Size() == 0 {
 		t.Fatal("vault file is empty")
 	}
-	// File permissions should be 0600.
-	if info.Mode().Perm() != 0600 {
-		t.Errorf("file mode = %o, want 0600", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		// File permissions should be 0600 on POSIX-like systems.
+		if info.Mode().Perm() != 0600 {
+			t.Errorf("file mode = %o, want 0600", info.Mode().Perm())
+		}
 	}
 }
 
