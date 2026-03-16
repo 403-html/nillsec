@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/403-html/nillsec/internal/vault"
+	"nillsec/internal/vault"
 )
 
 func TestRoundTrip(t *testing.T) {

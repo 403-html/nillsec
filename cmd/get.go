@@ -3,7 +3,7 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/403-html/nillsec/internal/vault"
+	"nillsec/internal/vault"
 	"github.com/spf13/cobra"
 )
 

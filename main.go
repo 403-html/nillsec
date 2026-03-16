@@ -1,6 +1,6 @@
 package main
 
-import "github.com/403-html/nillsec/cmd"
+import "nillsec/cmd"
 
 func main() {
 	cmd.Execute()

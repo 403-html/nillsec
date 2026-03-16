@@ -6,11 +6,7 @@ Another tool for secrets encryption/decryption
 
 ## Installation
 
-```sh
-go install github.com/403-html/nillsec@latest
-```
-
-Or build from source:
+Build from source:
 
 ```sh
 go build -o nillsec .

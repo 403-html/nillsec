@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"github.com/403-html/nillsec/internal/vault"
+	"nillsec/internal/vault"
 	"gopkg.in/yaml.v3"
 )
 
