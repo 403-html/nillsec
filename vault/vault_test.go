@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/403-html/nillsec/vault"
@@ -219,6 +220,94 @@ func TestMarshalUnmarshalText(t *testing.T) {
 	val, ok := v2.Get("token")
 	if !ok || val != "abc" {
 		t.Errorf("Get after UnmarshalText = %q, %v; want %q, true", val, ok, "abc")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Vault file robustness
+// ---------------------------------------------------------------------------
+
+func TestLoadHandlesCRLFLineEndings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.vault")
+	if err := vault.Init(path, testPW()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// Replace LF with CRLF to simulate Windows / editor round-trips.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	crlf := make([]byte, 0, len(raw)+10)
+	for _, b := range raw {
+		if b == '\n' {
+			crlf = append(crlf, '\r', '\n')
+		} else {
+			crlf = append(crlf, b)
+		}
+	}
+	if err := os.WriteFile(path, crlf, 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := vault.Load(path, testPW()); err != nil {
+		t.Errorf("Load rejected vault with CRLF line endings: %v", err)
+	}
+}
+
+func TestLoadRejectsTruncatedSalt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.vault")
+	if err := vault.Init(path, testPW()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// Corrupt the salt field to contain only 4 bytes (too short).
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	invalidB64 := "c2hvcnQ=" // base64("short") — 5 bytes, not 16
+	lines := strings.Split(string(raw), "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "salt: ") {
+			lines[i] = "salt: " + invalidB64
+			break
+		}
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := vault.Load(path, testPW()); err == nil {
+		t.Error("expected error when salt length is wrong, got nil")
+	}
+}
+
+func TestLoadRejectsTruncatedNonce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.vault")
+	if err := vault.Init(path, testPW()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// Corrupt the nonce field to contain only a few bytes.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	invalidB64 := "c2hvcnQ=" // base64("short") — 5 bytes, not 12
+	lines := strings.Split(string(raw), "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "nonce: ") {
+			lines[i] = "nonce: " + invalidB64
+			break
+		}
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := vault.Load(path, testPW()); err == nil {
+		t.Error("expected error when nonce length is wrong, got nil")
 	}
 }
 

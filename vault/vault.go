@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -69,7 +70,7 @@ func (v *Vault) Keys() []string {
 		keys = append(keys, k)
 	}
 	// Deterministic order.
-	sortStrings(keys)
+	sort.Strings(keys)
 	return keys
 }
 
@@ -223,17 +224,17 @@ func formatVaultFile(salt, nonce, ciphertext []byte) []byte {
 
 // parseVaultFile decodes a vault file produced by formatVaultFile.
 func parseVaultFile(raw []byte) (salt, nonce, ciphertext []byte, err error) {
-	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	lines := strings.Split(strings.TrimRight(string(raw), "\r\n"), "\n")
 	if len(lines) < 6 {
 		return nil, nil, nil, errors.New("invalid vault file format")
 	}
-	if lines[0] != vaultHeader {
+	if strings.TrimRight(lines[0], "\r") != vaultHeader {
 		return nil, nil, nil, fmt.Errorf("unrecognised vault header: %q", lines[0])
 	}
 
 	fields := make(map[string]string)
 	for _, line := range lines[1:] {
-		parts := strings.SplitN(line, ": ", 2)
+		parts := strings.SplitN(strings.TrimRight(line, "\r"), ": ", 2)
 		if len(parts) == 2 {
 			fields[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 		}
@@ -255,7 +256,15 @@ func parseVaultFile(raw []byte) (salt, nonce, ciphertext []byte, err error) {
 	if salt, err = decode("salt"); err != nil {
 		return
 	}
+	if len(salt) != saltSize {
+		err = fmt.Errorf("invalid salt length %d, expected %d", len(salt), saltSize)
+		return
+	}
 	if nonce, err = decode("nonce"); err != nil {
+		return
+	}
+	if len(nonce) != nonceSize {
+		err = fmt.Errorf("invalid nonce length %d, expected %d", len(nonce), nonceSize)
 		return
 	}
 	if ciphertext, err = decode("data"); err != nil {
@@ -272,14 +281,5 @@ func parseVaultFile(raw []byte) (salt, nonce, ciphertext []byte, err error) {
 func wipe(b []byte) {
 	for i := range b {
 		b[i] = 0
-	}
-}
-
-// sortStrings sorts a string slice in-place (avoids importing "sort" elsewhere).
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
 	}
 }

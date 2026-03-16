@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"syscall"
 
@@ -30,6 +31,9 @@ import (
 
 // version is set at build time via -ldflags "-X main.version=<tag>".
 var version = "dev"
+
+// validKeyRe matches valid POSIX shell identifier names (used as env var names).
+var validKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -100,6 +104,10 @@ func cmdAdd(args []string, overwrite bool) error {
 		return fmt.Errorf("usage: nillsec %s <key> <value>", map[bool]string{true: "set", false: "add"}[overwrite])
 	}
 	key, value := args[0], args[1]
+
+	if !validKeyRe.MatchString(key) {
+		return fmt.Errorf("invalid key %q: must be a valid POSIX identifier ([A-Za-z_][A-Za-z0-9_]*)", key)
+	}
 
 	path := vaultPath(nil)
 	pw, err := promptPassword("Master password: ")
@@ -249,7 +257,13 @@ func cmdEdit(_ []string) error {
 	}
 
 	// Remove temp file before writing vault (no plaintext on disk after this).
-	os.Remove(tmpPath)
+	// If removal fails, truncate the file to eliminate the plaintext before
+	// returning an error so the vault is not saved with plaintext still on disk.
+	if err := os.Remove(tmpPath); err != nil {
+		// Best-effort truncate to eliminate plaintext even if Remove failed.
+		_ = os.Truncate(tmpPath, 0)
+		return fmt.Errorf("cannot remove plaintext temp file %s: %w", tmpPath, err)
+	}
 
 	return vault.Save(path, pw, v)
 }
