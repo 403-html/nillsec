@@ -1,0 +1,7 @@
+# Build output
+nillsec
+nillsec.exe
+dist/
+
+# Go test cache
+*.test
