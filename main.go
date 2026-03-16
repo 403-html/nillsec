@@ -386,7 +386,8 @@ Usage:
   nillsec version               print version
 
 Environment:
-  NILLSEC_VAULT   vault file path (default: secrets.vault)
-  EDITOR          editor used by 'edit' command (default: vi)
+  NILLSEC_VAULT    vault file path (default: secrets.vault)
+  NILLSEC_PASSWORD master password (optional; if set, prompts may be skipped)
+  EDITOR           editor used by 'edit' command (default: vi)
 `)
 }
