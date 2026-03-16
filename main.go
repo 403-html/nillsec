@@ -17,6 +17,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -84,7 +85,7 @@ func cmdInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer wipeString(&pw)
+	defer wipeBytes(pw)
 
 	if err := vault.Init(path, pw); err != nil {
 		return err
@@ -105,7 +106,7 @@ func cmdAdd(args []string, overwrite bool) error {
 	if err != nil {
 		return err
 	}
-	defer wipeString(&pw)
+	defer wipeBytes(pw)
 
 	v, err := vault.Load(path, pw)
 	if err != nil {
@@ -133,7 +134,7 @@ func cmdGet(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer wipeString(&pw)
+	defer wipeBytes(pw)
 
 	v, err := vault.Load(path, pw)
 	if err != nil {
@@ -154,7 +155,7 @@ func cmdList(_ []string) error {
 	if err != nil {
 		return err
 	}
-	defer wipeString(&pw)
+	defer wipeBytes(pw)
 
 	v, err := vault.Load(path, pw)
 	if err != nil {
@@ -178,7 +179,7 @@ func cmdRemove(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer wipeString(&pw)
+	defer wipeBytes(pw)
 
 	v, err := vault.Load(path, pw)
 	if err != nil {
@@ -197,7 +198,7 @@ func cmdEdit(_ []string) error {
 	if err != nil {
 		return err
 	}
-	defer wipeString(&pw)
+	defer wipeBytes(pw)
 
 	v, err := vault.Load(path, pw)
 	if err != nil {
@@ -259,7 +260,7 @@ func cmdEnv(_ []string) error {
 	if err != nil {
 		return err
 	}
-	defer wipeString(&pw)
+	defer wipeBytes(pw)
 
 	v, err := vault.Load(path, pw)
 	if err != nil {
@@ -303,10 +304,10 @@ func init() {
 
 // promptPassword reads a password.
 // Priority: NILLSEC_PASSWORD env var → TTY (no echo) → stdin line.
-func promptPassword(prompt string) (string, error) {
+func promptPassword(prompt string) ([]byte, error) {
 	// Allow override via environment variable (useful in CI / scripts).
 	if pw := os.Getenv("NILLSEC_PASSWORD"); pw != "" {
-		return pw, nil
+		return []byte(pw), nil
 	}
 
 	// If stdin is a real terminal, read without echo.
@@ -315,53 +316,44 @@ func promptPassword(prompt string) (string, error) {
 		pw, err := term.ReadPassword(int(syscall.Stdin))
 		fmt.Fprintln(os.Stderr)
 		if err != nil {
-			return "", fmt.Errorf("cannot read password: %w", err)
+			return nil, fmt.Errorf("cannot read password: %w", err)
 		}
 		if len(pw) == 0 {
-			return "", fmt.Errorf("password must not be empty")
+			return nil, fmt.Errorf("password must not be empty")
 		}
-		return string(pw), nil
+		return pw, nil
 	}
 
 	// Non-TTY (piped) – read a line from the shared stdin reader.
 	line, err := stdinReader.ReadString('\n')
 	if err != nil && line == "" {
-		return "", fmt.Errorf("cannot read password from stdin: %w", err)
+		return nil, fmt.Errorf("cannot read password from stdin: %w", err)
 	}
 	pw := strings.TrimRight(line, "\r\n")
 	if pw == "" {
-		return "", fmt.Errorf("password must not be empty")
+		return nil, fmt.Errorf("password must not be empty")
 	}
-	return pw, nil
+	return []byte(pw), nil
 }
 
 // promptPasswordConfirm reads a password twice and ensures they match.
 // When stdin is not a TTY the two passwords are expected on separate lines.
-func promptPasswordConfirm() (string, error) {
+func promptPasswordConfirm() ([]byte, error) {
 	pw1, err := promptPassword("Master password: ")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	pw2, err := promptPassword("Confirm password: ")
 	if err != nil {
-		wipeString(&pw1)
-		return "", err
+		wipeBytes(pw1)
+		return nil, err
 	}
-	defer wipeString(&pw2)
-	if pw1 != pw2 {
-		wipeString(&pw1)
-		return "", fmt.Errorf("passwords do not match")
+	defer wipeBytes(pw2)
+	if !bytes.Equal(pw1, pw2) {
+		wipeBytes(pw1)
+		return nil, fmt.Errorf("passwords do not match")
 	}
 	return pw1, nil
-}
-
-// wipeString overwrites s in place.
-func wipeString(s *string) {
-	b := []byte(*s)
-	for i := range b {
-		b[i] = 0
-	}
-	*s = ""
 }
 
 // wipeBytes overwrites a byte slice.

@@ -92,7 +92,7 @@ func (v *Vault) UnmarshalText(data []byte) error {
 
 // Init creates a new, empty, encrypted vault file at path.
 // It returns an error if the file already exists.
-func Init(path, password string) error {
+func Init(path string, password []byte) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("vault already exists: %s", path)
 	}
@@ -101,7 +101,7 @@ func Init(path, password string) error {
 }
 
 // Load reads and decrypts the vault at path using password.
-func Load(path, password string) (*Vault, error) {
+func Load(path string, password []byte) (*Vault, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read vault: %w", err)
@@ -112,7 +112,7 @@ func Load(path, password string) (*Vault, error) {
 		return nil, err
 	}
 
-	key := deriveKey([]byte(password), salt)
+	key := deriveKey(password, salt)
 	defer wipe(key)
 
 	plaintext, err := decrypt(ciphertext, nonce, key)
@@ -131,7 +131,7 @@ func Load(path, password string) (*Vault, error) {
 
 // Save encrypts the vault and writes it to path.
 // A fresh random salt and nonce are generated on every call.
-func Save(path, password string, v *Vault) error {
+func Save(path string, password []byte, v *Vault) error {
 	plaintext, err := json.Marshal(v.data)
 	if err != nil {
 		return fmt.Errorf("marshal error: %w", err)
@@ -143,7 +143,7 @@ func Save(path, password string, v *Vault) error {
 		return fmt.Errorf("cannot generate salt: %w", err)
 	}
 
-	key := deriveKey([]byte(password), salt)
+	key := deriveKey(password, salt)
 	defer wipe(key)
 
 	nonce, ciphertext, err := encrypt(plaintext, key)

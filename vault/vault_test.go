@@ -11,13 +11,16 @@ import (
 
 const testPassword = "hunter2-test-password"
 
+// testPW returns the test password as a byte slice, matching the []byte API.
+func testPW() []byte { return []byte(testPassword) }
+
 // ---------------------------------------------------------------------------
 // Init / Load / Save round-trip
 // ---------------------------------------------------------------------------
 
 func TestInitCreatesVaultFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secrets.vault")
-	if err := vault.Init(path, testPassword); err != nil {
+	if err := vault.Init(path, testPW()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	info, err := os.Stat(path)
@@ -37,20 +40,20 @@ func TestInitCreatesVaultFile(t *testing.T) {
 
 func TestInitFailsIfVaultAlreadyExists(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secrets.vault")
-	if err := vault.Init(path, testPassword); err != nil {
+	if err := vault.Init(path, testPW()); err != nil {
 		t.Fatalf("first Init: %v", err)
 	}
-	if err := vault.Init(path, testPassword); err == nil {
+	if err := vault.Init(path, testPW()); err == nil {
 		t.Fatal("expected error on second Init, got nil")
 	}
 }
 
 func TestLoadEmptyVault(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secrets.vault")
-	if err := vault.Init(path, testPassword); err != nil {
+	if err := vault.Init(path, testPW()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	v, err := vault.Load(path, testPassword)
+	v, err := vault.Load(path, testPW())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -61,10 +64,10 @@ func TestLoadEmptyVault(t *testing.T) {
 
 func TestLoadWrongPasswordFails(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secrets.vault")
-	if err := vault.Init(path, testPassword); err != nil {
+	if err := vault.Init(path, testPW()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if _, err := vault.Load(path, "wrong-password"); err == nil {
+	if _, err := vault.Load(path, []byte("wrong-password")); err == nil {
 		t.Fatal("expected decryption error with wrong password")
 	}
 }
@@ -144,21 +147,21 @@ func TestKeysSorted(t *testing.T) {
 
 func TestRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secrets.vault")
-	if err := vault.Init(path, testPassword); err != nil {
+	if err := vault.Init(path, testPW()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
-	v, err := vault.Load(path, testPassword)
+	v, err := vault.Load(path, testPW())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	v.Set("api_token", "tok123")
 	v.Set("db_pass", "dbsecret")
-	if err := vault.Save(path, testPassword, v); err != nil {
+	if err := vault.Save(path, testPW(), v); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	v2, err := vault.Load(path, testPassword)
+	v2, err := vault.Load(path, testPW())
 	if err != nil {
 		t.Fatalf("second Load: %v", err)
 	}
@@ -172,15 +175,24 @@ func TestRoundTrip(t *testing.T) {
 
 func TestEachSaveUsesNewNonce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secrets.vault")
-	if err := vault.Init(path, testPassword); err != nil {
+	if err := vault.Init(path, testPW()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	v, _ := vault.Load(path, testPassword)
-	first, _ := os.ReadFile(path)
-	if err := vault.Save(path, testPassword, v); err != nil {
+	v, err := vault.Load(path, testPW())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile (first): %v", err)
+	}
+	if err := vault.Save(path, testPW(), v); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	second, _ := os.ReadFile(path)
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile (second): %v", err)
+	}
 	if string(first) == string(second) {
 		t.Error("two consecutive saves produced identical ciphertext (nonce reuse?)")
 	}
@@ -219,10 +231,10 @@ func TestMarshalUnmarshalText(t *testing.T) {
 func newVault(t *testing.T) *vault.Vault {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "secrets.vault")
-	if err := vault.Init(path, testPassword); err != nil {
+	if err := vault.Init(path, testPW()); err != nil {
 		t.Fatalf("newVault Init: %v", err)
 	}
-	v, err := vault.Load(path, testPassword)
+	v, err := vault.Load(path, testPW())
 	if err != nil {
 		t.Fatalf("newVault Load: %v", err)
 	}
