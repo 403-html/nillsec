@@ -132,11 +132,18 @@ jobs:
         run: |
           sha256sum nillsec-* | tee checksums.txt
 
-      - name: Upload assets and publish release
+      - name: Upload assets to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" \
+          gh release upload "${{ github.ref_name }}" \
             dist/nillsec-* dist/checksums.txt \
+            --clobber
+
+      - name: Edit release metadata
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ github.ref_name }}" \
             --generate-notes \
             --title "${{ github.ref_name }}"
