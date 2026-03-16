@@ -1,0 +1,14 @@
+# Compiled binary
+nillsec
+*.exe
+
+# Secrets vault files (user-created; commit only if intentional)
+# *.vault
+
+# Go workspace
+vendor/
+
+# Editor
+.idea/
+.vscode/
+*.swp
