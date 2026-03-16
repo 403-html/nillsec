@@ -120,12 +120,9 @@ jobs:
         run: |
           sha256sum nillsec-* | tee checksums.txt
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/nillsec-*
-            dist/checksums.txt
-          generate_release_notes: true
+      - name: Upload assets and update release notes
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" dist/nillsec-* dist/checksums.txt --clobber
+          gh release edit "${{ github.ref_name }}" --generate-notes
