@@ -12,11 +12,33 @@ A simple command-line tool for managing encrypted project secrets stored in a si
 
 ## Installation
 
+**Pre-built binary (macOS / Linux / Windows)**
+
+Download the archive for your platform from the [latest release](https://github.com/403-html/nillsec/releases/latest), then extract and install:
+
+```sh
+# macOS (Apple Silicon)
+curl -L https://github.com/403-html/nillsec/releases/latest/download/nillsec-darwin-arm64.tar.gz | tar -xz
+sudo mv nillsec-darwin-arm64 /usr/local/bin/nillsec
+
+# macOS (Intel)
+curl -L https://github.com/403-html/nillsec/releases/latest/download/nillsec-darwin-amd64.tar.gz | tar -xz
+sudo mv nillsec-darwin-amd64 /usr/local/bin/nillsec
+
+# Linux (x86-64)
+curl -L https://github.com/403-html/nillsec/releases/latest/download/nillsec-linux-amd64.tar.gz | tar -xz
+sudo mv nillsec-linux-amd64 /usr/local/bin/nillsec
+```
+
+> **macOS note:** always extract with `tar -xzf` (or pipe through `tar -xz` as above) rather than double-clicking the archive in Finder. Extracting in the terminal prevents macOS from applying the quarantine flag to the binary, which avoids the *"Apple could not verify…"* Gatekeeper prompt.
+
+**Via Go toolchain**
+
 ```sh
 go install github.com/403-html/nillsec@latest
 ```
 
-Or build from source:
+**Build from source**
 
 ```sh
 go build -o nillsec .
