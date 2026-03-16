@@ -110,8 +110,8 @@ jobs:
           retention-days: 1
 
   # -----------------------------------------------------------------------
-  # Download all binaries, compute SHA-256 checksums, and publish the
-  # GitHub Release with all assets attached.
+  # Download all binaries, compute SHA-256 checksums, and upload all
+  # assets to the already-created GitHub Release.
   # -----------------------------------------------------------------------
   release:
     name: Publish Release
@@ -139,11 +139,3 @@ jobs:
           gh release upload "${{ github.ref_name }}" \
             dist/nillsec-* dist/checksums.txt \
             --clobber
-
-      - name: Edit release metadata
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release edit "${{ github.ref_name }}" \
-            --generate-notes \
-            --title "${{ github.ref_name }}"
