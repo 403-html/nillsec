@@ -1,5 +1,7 @@
-// Package vault provides AES-256-GCM encrypted secret storage backed by
-// an Argon2id-derived key.  The on-disk format is a small text envelope:
+// vault.go provides AES-256-GCM encrypted secret storage backed by an
+// Argon2id-derived key.
+//
+// On-disk format (text envelope):
 //
 //	$VAULT;1
 //	kdf: argon2id
@@ -8,12 +10,12 @@
 //	cipher: aes-256-gcm
 //	data: <base64 encrypted YAML>
 //
-// The YAML plaintext stored inside the encrypted blob has the shape:
+// The YAML plaintext inside the encrypted blob:
 //
 //	version: 1
 //	secrets:
 //	  key: value
-package vault
+package main
 
 import (
 	"bufio"
@@ -50,16 +52,16 @@ type Vault struct {
 	Secrets map[string]string `yaml:"secrets"`
 }
 
-// New returns an empty vault ready for use.
-func New() *Vault {
+// newVault returns an empty vault ready for use.
+func newVault() *Vault {
 	return &Vault{
 		Version: 1,
 		Secrets: make(map[string]string),
 	}
 }
 
-// Open reads and decrypts a vault file.
-func Open(path string, password []byte) (*Vault, error) {
+// openVault reads and decrypts a vault file.
+func openVault(path string, password []byte) (*Vault, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open vault: %w", err)
@@ -74,7 +76,7 @@ func Open(path string, password []byte) (*Vault, error) {
 	key := deriveKey(password, salt)
 	defer zeroBytes(key)
 
-	plaintext, err := decrypt(key, nonce, ciphertext)
+	plaintext, err := decryptData(key, nonce, ciphertext)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt vault: %w", err)
 	}
@@ -111,7 +113,7 @@ func (v *Vault) Save(path string, password []byte) error {
 		return fmt.Errorf("generate nonce: %w", err)
 	}
 
-	ciphertext, err := encrypt(key, nonce, plaintext)
+	ciphertext, err := encryptData(key, nonce, plaintext)
 	if err != nil {
 		return fmt.Errorf("encrypt vault: %w", err)
 	}
@@ -124,8 +126,8 @@ func deriveKey(password, salt []byte) []byte {
 	return argon2.IDKey(password, salt, argonIterations, argonMemory, argonParallelism, argonKeyLen)
 }
 
-// encrypt encrypts plaintext with AES-256-GCM using the provided key and nonce.
-func encrypt(key, nonce, plaintext []byte) ([]byte, error) {
+// encryptData encrypts plaintext with AES-256-GCM using the provided key and nonce.
+func encryptData(key, nonce, plaintext []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -137,8 +139,8 @@ func encrypt(key, nonce, plaintext []byte) ([]byte, error) {
 	return gcm.Seal(nil, nonce, plaintext, nil), nil
 }
 
-// decrypt decrypts ciphertext with AES-256-GCM using the provided key and nonce.
-func decrypt(key, nonce, ciphertext []byte) ([]byte, error) {
+// decryptData decrypts ciphertext with AES-256-GCM using the provided key and nonce.
+func decryptData(key, nonce, ciphertext []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err

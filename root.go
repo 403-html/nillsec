@@ -1,4 +1,4 @@
-package cmd
+package main
 
 import (
 	"fmt"
@@ -19,8 +19,8 @@ var rootCmd = &cobra.Command{
 	SilenceErrors: true,
 }
 
-// Execute is the entry point for the CLI.
-func Execute() {
+// execute is the entry point for the CLI.
+func execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

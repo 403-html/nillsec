@@ -1,9 +1,8 @@
-package cmd
+package main
 
 import (
 	"fmt"
 
-	"nillsec/internal/vault"
 	"github.com/spf13/cobra"
 )
 
@@ -19,9 +18,9 @@ var removeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		defer zeroSlice(password)
+		defer zeroBytes(password)
 
-		v, err := vault.Open(vaultPath, password)
+		v, err := openVault(vaultPath, password)
 		if err != nil {
 			return err
 		}

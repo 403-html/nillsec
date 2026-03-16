@@ -1,4 +1,4 @@
-package cmd
+package main
 
 import (
 	"bytes"
@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 
-	"nillsec/internal/vault"
 	"github.com/spf13/cobra"
 )
 
@@ -23,19 +22,19 @@ var initCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		defer zeroSlice(password)
+		defer zeroBytes(password)
 
 		confirm, err := readPassword("Confirm password: ")
 		if err != nil {
 			return err
 		}
-		defer zeroSlice(confirm)
+		defer zeroBytes(confirm)
 
 		if !bytes.Equal(password, confirm) {
 			return errors.New("passwords do not match")
 		}
 
-		v := vault.New()
+		v := newVault()
 		if err := v.Save(vaultPath, password); err != nil {
 			return err
 		}

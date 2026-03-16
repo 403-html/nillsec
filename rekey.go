@@ -1,10 +1,9 @@
-package cmd
+package main
 
 import (
 	"bytes"
 	"errors"
 
-	"nillsec/internal/vault"
 	"github.com/spf13/cobra"
 )
 
@@ -17,9 +16,9 @@ var rekeyCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		defer zeroSlice(oldPassword)
+		defer zeroBytes(oldPassword)
 
-		v, err := vault.Open(vaultPath, oldPassword)
+		v, err := openVault(vaultPath, oldPassword)
 		if err != nil {
 			return err
 		}
@@ -28,13 +27,13 @@ var rekeyCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		defer zeroSlice(newPassword)
+		defer zeroBytes(newPassword)
 
 		confirm, err := readPassword("Confirm new password: ")
 		if err != nil {
 			return err
 		}
-		defer zeroSlice(confirm)
+		defer zeroBytes(confirm)
 
 		if !bytes.Equal(newPassword, confirm) {
 			return errors.New("passwords do not match")

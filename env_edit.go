@@ -1,4 +1,4 @@
-package cmd
+package main
 
 import (
 	"fmt"
@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"nillsec/internal/vault"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var envCmd = &cobra.Command{
@@ -24,9 +24,9 @@ Integrate with your shell via:
 		if err != nil {
 			return err
 		}
-		defer zeroSlice(password)
+		defer zeroBytes(password)
 
-		v, err := vault.Open(vaultPath, password)
+		v, err := openVault(vaultPath, password)
 		if err != nil {
 			return err
 		}
@@ -56,9 +56,9 @@ and re-encrypts on save. The plaintext file is removed immediately after.`,
 		if err != nil {
 			return err
 		}
-		defer zeroSlice(password)
+		defer zeroBytes(password)
 
-		v, err := vault.Open(vaultPath, password)
+		v, err := openVault(vaultPath, password)
 		if err != nil {
 			return err
 		}
@@ -105,7 +105,7 @@ and re-encrypts on save. The plaintext file is removed immediately after.`,
 		if err != nil {
 			return fmt.Errorf("read edited file: %w", err)
 		}
-		defer zeroSlice(edited)
+		defer zeroBytes(edited)
 
 		updated, err := yamlToVault(edited)
 		if err != nil {
@@ -123,7 +123,7 @@ func shellEscape(s string) string {
 }
 
 // vaultToYAML serialises the vault secrets into a human-editable YAML blob.
-func vaultToYAML(v *vault.Vault) ([]byte, error) {
+func vaultToYAML(v *Vault) ([]byte, error) {
 	sb := strings.Builder{}
 	sb.WriteString("# Edit secrets below. Save and close the editor to re-encrypt.\n")
 	sb.WriteString("# Do not change the 'version' field.\n")
@@ -146,9 +146,9 @@ func vaultToYAML(v *vault.Vault) ([]byte, error) {
 }
 
 // yamlToVault parses the YAML blob produced by vaultToYAML back into a Vault.
-func yamlToVault(data []byte) (*vault.Vault, error) {
-	v := vault.New()
-	if err := unmarshalVaultYAML(data, v); err != nil {
+func yamlToVault(data []byte) (*Vault, error) {
+	v := newVault()
+	if err := yaml.Unmarshal(data, v); err != nil {
 		return nil, err
 	}
 	return v, nil

@@ -1,9 +1,6 @@
-package cmd
+package main
 
-import (
-	"nillsec/internal/vault"
-	"github.com/spf13/cobra"
-)
+import "github.com/spf13/cobra"
 
 var setCmd = &cobra.Command{
 	Use:   "set <key> <value>",
@@ -17,9 +14,9 @@ var setCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		defer zeroSlice(password)
+		defer zeroBytes(password)
 
-		v, err := vault.Open(vaultPath, password)
+		v, err := openVault(vaultPath, password)
 		if err != nil {
 			return err
 		}
