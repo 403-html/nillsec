@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Run the full test suite before building release artifacts.
+  # -----------------------------------------------------------------------
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test ./... -v -count=1
+
+  # -----------------------------------------------------------------------
+  # Cross-compile for every target platform and collect the binaries.
+  # -----------------------------------------------------------------------
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: test
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          # Linux
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64     # Raspberry Pi 4 / 5
+          - goos: linux
+            goarch: arm
+            goarm: "7"        # Raspberry Pi 2 / 3
+          # macOS
+          - goos: darwin
+            goarch: amd64     # Intel Mac
+          - goos: darwin
+            goarch: arm64     # Apple Silicon (M1/M2/M3)
+          # Windows
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set binary name
+        id: name
+        shell: bash
+        run: |
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
+          GOARM_SUFFIX=""
+          if [ -n "${{ matrix.goarm }}" ]; then GOARM_SUFFIX="v${{ matrix.goarm }}"; fi
+          echo "binary=nillsec-${{ matrix.goos }}-${{ matrix.goarch }}${GOARM_SUFFIX}${EXT}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: "0"
+        run: |
+          go build \
+            -trimpath \
+            -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o "${{ steps.name.outputs.binary }}" \
+            .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.binary }}
+          path: ${{ steps.name.outputs.binary }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # -----------------------------------------------------------------------
+  # Download all binaries, compute SHA-256 checksums, and publish the
+  # GitHub Release with all assets attached.
+  # -----------------------------------------------------------------------
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        working-directory: dist
+        run: |
+          sha256sum nillsec-* | tee checksums.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/nillsec-*
+            dist/checksums.txt
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

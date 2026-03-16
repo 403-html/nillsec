@@ -27,6 +27,9 @@ import (
 	"golang.org/x/term"
 )
 
+// version is set at build time via -ldflags "-X main.version=<tag>".
+var version = "dev"
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -59,6 +62,9 @@ func run(args []string) error {
 		return cmdEdit(rest)
 	case "env":
 		return cmdEnv(rest)
+	case "version", "--version", "-v":
+		fmt.Println("nillsec", version)
+		return nil
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -377,6 +383,7 @@ Usage:
   nillsec remove <key>          delete a secret
   nillsec edit                  open vault contents in $EDITOR
   nillsec env                   print secrets as export statements
+  nillsec version               print version
 
 Environment:
   NILLSEC_VAULT   vault file path (default: secrets.vault)
