@@ -89,11 +89,23 @@ jobs:
             -o "${{ steps.name.outputs.binary }}" \
             .
 
+      - name: Package artifact
+        id: package
+        shell: bash
+        run: |
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            echo "archive=${{ steps.name.outputs.binary }}" >> "$GITHUB_OUTPUT"
+          else
+            chmod +x "${{ steps.name.outputs.binary }}"
+            tar -czf "${{ steps.name.outputs.binary }}.tar.gz" "${{ steps.name.outputs.binary }}"
+            echo "archive=${{ steps.name.outputs.binary }}.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.name.outputs.binary }}
-          path: ${{ steps.name.outputs.binary }}
+          name: ${{ steps.package.outputs.archive }}
+          path: ${{ steps.package.outputs.archive }}
           if-no-files-found: error
           retention-days: 1
 
@@ -120,9 +132,18 @@ jobs:
         run: |
           sha256sum nillsec-* | tee checksums.txt
 
-      - name: Upload assets and update release notes
+      - name: Upload assets to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ github.ref_name }}" dist/nillsec-* dist/checksums.txt --clobber
-          gh release edit "${{ github.ref_name }}" --generate-notes
+          gh release upload "${{ github.ref_name }}" \
+            dist/nillsec-* dist/checksums.txt \
+            --clobber
+
+      - name: Edit release metadata
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ github.ref_name }}" \
+            --generate-notes \
+            --title "${{ github.ref_name }}"
