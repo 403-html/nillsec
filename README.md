@@ -11,7 +11,7 @@ A simple command-line tool for managing encrypted project secrets stored in a si
 - **AES-256-GCM** authenticated encryption
 - **Argon2id** key derivation (brute-force resistant)
 - Single encrypted vault file — safe to commit to version control
-- Secrets are decrypted only in memory, never written to disk in plaintext (the `edit` command writes to `/dev/shm` on Linux — see below)
+- Secrets are decrypted only in memory, never written to disk in plaintext (the `edit` command attempts to keep plaintext in RAM via `/dev/shm` on Linux — see below)
 - Export secrets as environment variables (`eval "$(nillsec env)"`)
 
 ## Installation
@@ -118,8 +118,8 @@ nillsec edit
 >   directory.  Its contents are zero-wiped and the file is deleted as soon as
 >   the editor exits.
 >
-> On all platforms the editor file is removed before the updated vault is saved,
-> so no plaintext persists after `edit` completes.
+> On all platforms the editor file is wiped and deleted on a best-effort basis
+> once the editor exits, before the updated vault is saved.
 
 ### Export secrets as environment variables
 
