@@ -217,27 +217,20 @@ func cmdEdit(_ []string) error {
 	if err != nil {
 		return err
 	}
+	defer wipeBytes(text)
 
-	// Write decrypted content to a temp file.
-	tmp, err := os.CreateTemp("", "nillsec-edit-*.json")
+	ef, err := newEditorFile(text)
 	if err != nil {
-		return fmt.Errorf("cannot create temp file: %w", err)
+		return err
 	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath) // always clean up
-
-	if _, err := tmp.Write(text); err != nil {
-		tmp.Close()
-		return fmt.Errorf("cannot write temp file: %w", err)
-	}
-	tmp.Close()
+	defer ef.discard()
 
 	// Open in editor.
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		editor = "vi"
 	}
-	editorCmd := exec.Command(editor, tmpPath) //nolint:gosec // editor path from env
+	editorCmd := exec.Command(editor, ef.path()) //nolint:gosec
 	editorCmd.Stdin = os.Stdin
 	editorCmd.Stdout = os.Stdout
 	editorCmd.Stderr = os.Stderr
@@ -245,24 +238,14 @@ func cmdEdit(_ []string) error {
 		return fmt.Errorf("editor exited with error: %w", err)
 	}
 
-	// Read and re-encrypt.
-	edited, err := os.ReadFile(tmpPath)
+	edited, err := ef.readAndClose()
 	if err != nil {
-		return fmt.Errorf("cannot read edited file: %w", err)
+		return err
 	}
 	defer wipeBytes(edited)
 
 	if err := v.UnmarshalText(edited); err != nil {
 		return err
-	}
-
-	// Remove temp file before writing vault (no plaintext on disk after this).
-	// If removal fails, truncate the file to eliminate the plaintext before
-	// returning an error so the vault is not saved with plaintext still on disk.
-	if err := os.Remove(tmpPath); err != nil {
-		// Best-effort truncate to eliminate plaintext even if Remove failed.
-		_ = os.Truncate(tmpPath, 0)
-		return fmt.Errorf("cannot remove plaintext temp file %s: %w", tmpPath, err)
 	}
 
 	return vault.Save(path, pw, v)
