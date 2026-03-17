@@ -94,7 +94,7 @@ func TestCmdEditRoundTrip(t *testing.T) {
 }
 
 // TestCmdEditCleansUpEditorFile verifies that the editor file is removed once
-// cmdEdit returns, regardless of success or failure.
+// cmdEdit returns after a successful edit.
 func TestCmdEditCleansUpEditorFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake editor not supported on Windows")
@@ -128,6 +128,44 @@ func TestCmdEditCleansUpEditorFile(t *testing.T) {
 
 	if _, err := os.Stat(editorPath); !os.IsNotExist(err) {
 		t.Errorf("editor file %q still exists after cmdEdit completed; expected it to be removed", editorPath)
+	}
+}
+
+// TestCmdEditCleansUpEditorFileOnEditorError verifies that the editor file is
+// removed even when the editor exits with a non-zero status.
+func TestCmdEditCleansUpEditorFileOnEditorError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake editor not supported on Windows")
+	}
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, nil)
+
+	pathRecordFile := filepath.Join(dir, "editor-path.txt")
+
+	// A script that records the editor-file path but exits with an error.
+	script := filepath.Join(dir, "fail-editor.sh")
+	scriptContent := "#!/bin/sh\necho \"$1\" > \"" + pathRecordFile + "\"\nexit 1\n"
+	if err := os.WriteFile(script, []byte(scriptContent), 0700); err != nil {
+		t.Fatalf("write fail editor: %v", err)
+	}
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+	t.Setenv("EDITOR", script)
+
+	if err := cmdEdit(nil); err == nil {
+		t.Fatal("cmdEdit: expected error from failing editor, got nil")
+	}
+
+	raw, err := os.ReadFile(pathRecordFile)
+	if err != nil {
+		t.Fatalf("read path record file: %v", err)
+	}
+	editorPath := strings.TrimRight(string(raw), "\n\r")
+
+	if _, err := os.Stat(editorPath); !os.IsNotExist(err) {
+		t.Errorf("editor file %q still exists after cmdEdit returned error; expected it to be removed", editorPath)
 	}
 }
 
