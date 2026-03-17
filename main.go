@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -312,19 +313,9 @@ func cmdExec(args []string) error {
 
 	// Build the child's environment: inherit the current environment, then
 	// overlay vault secrets so they take precedence over any existing values.
-	envMap := make(map[string]string)
-	for _, e := range os.Environ() {
-		k, val, _ := strings.Cut(e, "=")
-		envMap[k] = val
-	}
-	for _, k := range v.Keys() {
-		val, _ := v.Get(k)
-		envMap[strings.ToUpper(k)] = val
-	}
-	env := make([]string, 0, len(envMap))
-	for k, val := range envMap {
-		env = append(env, k+"="+val)
-	}
+	// On Windows, env-var keys are case-insensitive, so we normalize them to
+	// upper-case to ensure vault values reliably override inherited ones.
+	env := buildChildEnv(os.Environ(), v, runtime.GOOS == "windows")
 
 	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...) //nolint:gosec
 	cmd.Env = env
@@ -345,6 +336,31 @@ func cmdExec(args []string) error {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// buildChildEnv merges an inherited environment slice with vault secrets.
+// Vault values are always upper-cased and take precedence over any inherited
+// entry with the same name. When normalizeKeys is true (Windows), inherited
+// keys are upper-cased before the merge so that mixed-case names such as
+// "Path" do not survive alongside the upper-cased vault key "PATH".
+func buildChildEnv(inherited []string, v *vault.Vault, normalizeKeys bool) []string {
+	envMap := make(map[string]string, len(inherited))
+	for _, e := range inherited {
+		k, val, _ := strings.Cut(e, "=")
+		if normalizeKeys {
+			k = strings.ToUpper(k)
+		}
+		envMap[k] = val
+	}
+	for _, k := range v.Keys() {
+		val, _ := v.Get(k)
+		envMap[strings.ToUpper(k)] = val
+	}
+	env := make([]string, 0, len(envMap))
+	for k, val := range envMap {
+		env = append(env, k+"="+val)
+	}
+	return env
+}
 
 // vaultPath returns the vault file path from args, NILLSEC_VAULT env var,
 // or the default "secrets.vault".

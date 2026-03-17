@@ -211,6 +211,96 @@ func TestCmdEditUsesDevShm(t *testing.T) {
 	}
 }
 
+// TestBuildChildEnvWindowsNormalization verifies that when normalizeKeys is
+// true (simulating Windows), inherited env keys are upper-cased before the
+// merge so that vault values deterministically override mixed-case entries
+// (e.g. "Path" from Windows' os.Environ() is overridden by vault key "path"
+// which is stored as "PATH").
+func TestBuildChildEnvWindowsNormalization(t *testing.T) {
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, map[string]string{
+		"path": "/vault/bin",
+		"foo":  "vaultfoo",
+	})
+
+	v, err := vault.Load(vaultFile, []byte(editTestPassword))
+	if err != nil {
+		t.Fatalf("vault.Load: %v", err)
+	}
+
+	// Simulate Windows inherited env: mixed-case keys.
+	inherited := []string{
+		"Path=C:\\Windows\\System32",
+		"Foo=inheritfoo",
+		"TEMP=C:\\Temp",
+	}
+
+	env := buildChildEnv(inherited, v, true /* normalizeKeys = Windows */)
+
+	got := make(map[string]string, len(env))
+	for _, e := range env {
+		k, val, _ := strings.Cut(e, "=")
+		got[k] = val
+	}
+
+	// Vault "path" (→ "PATH") must override inherited "Path".
+	if got["PATH"] != "/vault/bin" {
+		t.Errorf("PATH = %q; want %q", got["PATH"], "/vault/bin")
+	}
+	// Mixed-case key must not survive; only upper-case form exists.
+	if _, exists := got["Path"]; exists {
+		t.Error("envMap still contains mixed-case key 'Path'; expected it to be normalized to 'PATH'")
+	}
+	// Vault "foo" (→ "FOO") must override inherited "Foo".
+	if got["FOO"] != "vaultfoo" {
+		t.Errorf("FOO = %q; want %q", got["FOO"], "vaultfoo")
+	}
+	if _, exists := got["Foo"]; exists {
+		t.Error("envMap still contains mixed-case key 'Foo'; expected it to be normalized to 'FOO'")
+	}
+	// Non-conflicting inherited key normalized to upper.
+	if got["TEMP"] != "C:\\Temp" {
+		t.Errorf("TEMP = %q; want %q", got["TEMP"], "C:\\Temp")
+	}
+}
+
+// TestBuildChildEnvNoNormalization verifies that when normalizeKeys is false
+// (non-Windows), mixed-case inherited keys are preserved as-is, and vault
+// values are stored under their upper-cased names without affecting other keys.
+func TestBuildChildEnvNoNormalization(t *testing.T) {
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, map[string]string{"secret": "vaultval"})
+
+	v, err := vault.Load(vaultFile, []byte(editTestPassword))
+	if err != nil {
+		t.Fatalf("vault.Load: %v", err)
+	}
+
+	inherited := []string{
+		"existing=inherit",
+		"SECRET=will-be-overridden",
+	}
+
+	env := buildChildEnv(inherited, v, false /* normalizeKeys = non-Windows */)
+
+	got := make(map[string]string, len(env))
+	for _, e := range env {
+		k, val, _ := strings.Cut(e, "=")
+		got[k] = val
+	}
+
+	// "existing" preserved with original case.
+	if got["existing"] != "inherit" {
+		t.Errorf("existing = %q; want %q", got["existing"], "inherit")
+	}
+	// Vault "secret" (→ "SECRET") overrides inherited "SECRET".
+	if got["SECRET"] != "vaultval" {
+		t.Errorf("SECRET = %q; want %q", got["SECRET"], "vaultval")
+	}
+}
+
 // TestCmdExecInjectsSecrets verifies that cmdExec injects vault secrets as
 // environment variables into the child process.
 func TestCmdExecInjectsSecrets(t *testing.T) {
