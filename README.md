@@ -129,6 +129,18 @@ eval "$(nillsec env)"
 # Sets DATABASE_PASSWORD and API_TOKEN in the current shell.
 ```
 
+### Upgrade to the latest release
+
+```sh
+nillsec upgrade
+```
+
+`nillsec upgrade` fetches the latest release from GitHub, replaces the running
+binary in-place, and exits.  If the latest release is a **major version bump**
+(e.g. v1 → v2), you will be warned that breaking changes may be present and
+asked to confirm before the download begins.  If you are already on the latest
+version, the command simply tells you so and exits without making any changes.
+
 ## Environment variables
 
 | Variable           | Description                                  | Default         |
