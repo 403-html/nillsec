@@ -185,12 +185,12 @@ func downloadAndInstall(url, assetName, exePath string) error {
 		return fmt.Errorf("download failed: HTTP %s", resp.Status)
 	}
 
-	// Write to a temp file in the same directory as the binary to ensure
-	// os.Rename works (requires the same filesystem).
-	dir := filepath.Dir(exePath)
-	tmp, err := os.CreateTemp(dir, ".nillsec-upgrade-*")
+	// Write to a temp file in the system temp directory; the user is likely
+	// to have write access there even when the binary directory is owned by
+	// root (e.g. /usr/local/bin).
+	tmp, err := os.CreateTemp("", ".nillsec-upgrade-*")
 	if err != nil {
-		return fmt.Errorf("creating temp file in %s (check write permissions): %w", dir, err)
+		return fmt.Errorf("creating temp file: %w", err)
 	}
 	tmpName := tmp.Name()
 	ok := false
@@ -245,7 +245,61 @@ func downloadAndInstall(url, assetName, exePath string) error {
 		return fmt.Errorf("setting file permissions: %w", err)
 	}
 
+	// Attempt an atomic rename. This works when the temp directory and the
+	// binary directory share the same filesystem.
 	if err := os.Rename(tmpName, exePath); err != nil {
+		// Rename may fail with a cross-device error when the system temp
+		// directory and the binary directory are on different filesystems.
+		// Fall back to copying the downloaded file into a temp file inside
+		// the destination directory and renaming from there.
+		if err2 := installViaDestDir(tmpName, exePath); err2 != nil {
+			return err2
+		}
+		os.Remove(tmpName) //nolint:errcheck
+	}
+
+	ok = true
+	return nil
+}
+
+// installViaDestDir copies the file at srcPath into a temp file in the same
+// directory as dstPath, sets executable permissions, then renames it over
+// dstPath. It is used as a fallback when a cross-filesystem rename is not
+// possible.
+func installViaDestDir(srcPath, dstPath string) error {
+	dir := filepath.Dir(dstPath)
+	tmp, err := os.CreateTemp(dir, ".nillsec-upgrade-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file in %s (check write permissions): %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	ok := false
+	defer func() {
+		tmp.Close()
+		if !ok {
+			os.Remove(tmpName) //nolint:errcheck
+		}
+	}()
+
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("reopening downloaded file: %w", err)
+	}
+	defer src.Close()
+
+	if _, err := io.Copy(tmp, src); err != nil {
+		return fmt.Errorf("copying to binary directory: %w", err)
+	}
+
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp file: %w", err)
+	}
+
+	if err := os.Chmod(tmpName, 0o755); err != nil {
+		return fmt.Errorf("setting file permissions: %w", err)
+	}
+
+	if err := os.Rename(tmpName, dstPath); err != nil {
 		return fmt.Errorf("replacing binary (try with elevated privileges): %w", err)
 	}
 
