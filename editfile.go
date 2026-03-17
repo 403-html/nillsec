@@ -5,16 +5,9 @@ import (
 	"os"
 )
 
-// editorFile manages the backing storage used to pass vault plaintext to an
-// external editor.
-//
-// On Linux the file is created in /dev/shm (a tmpfs mount), so the plaintext
-// lives only in RAM and is never flushed to physical disk. On other platforms
-// it falls back to the OS temp directory; the content is zero-wiped before the
-// file is removed.
-//
-// The platform-specific newEditorFile constructor is provided in
-// editfile_linux.go and editfile_other.go via build tags.
+// editorFile manages the temporary file used to pass vault plaintext to an
+// external editor. The platform-specific constructor (newEditorFile) is in
+// editfile_linux.go / editfile_other.go.
 type editorFile struct {
 	fpath  string
 	closed bool
@@ -23,9 +16,7 @@ type editorFile struct {
 // path returns the filesystem path to pass to the editor.
 func (e *editorFile) path() string { return e.fpath }
 
-// discard wipes and removes the editor file on a best-effort basis.
-// It is intended for deferred cleanup on error paths where no error can be
-// returned. It is idempotent; subsequent calls are no-ops.
+// discard wipes and removes the editor file (best-effort, idempotent).
 func (e *editorFile) discard() {
 	if e.closed {
 		return
@@ -35,18 +26,14 @@ func (e *editorFile) discard() {
 	_ = os.Remove(e.fpath)
 }
 
-// readAndClose reads the current file contents, then wipes and removes the
-// backing file. It must be called at most once.
-//
-// Unlike discard, readAndClose returns an error if the file cannot be removed.
-// Callers should treat a removal failure as fatal and abort any further
-// processing (e.g. re-encrypting the vault), so that plaintext is not silently
-// left on disk.
+// readAndClose reads the file contents, then wipes and removes the backing
+// file. Returns an error if the file cannot be removed so that callers can
+// abort rather than leave plaintext behind.
 func (e *editorFile) readAndClose() ([]byte, error) {
 	data, readErr := os.ReadFile(e.fpath)
-	wipeFile(e.fpath) // best-effort zero-wipe before removal
+	wipeFile(e.fpath)
 	removeErr := os.Remove(e.fpath)
-	e.closed = true // mark closed so any deferred discard() call is a no-op
+	e.closed = true
 	if readErr != nil {
 		return nil, fmt.Errorf("cannot read editor file: %w", readErr)
 	}
@@ -56,9 +43,7 @@ func (e *editorFile) readAndClose() ([]byte, error) {
 	return data, nil
 }
 
-// wipeFile overwrites a file with zero bytes for best-effort secure erasure.
-// This is a best-effort measure; it does not guarantee against forensic
-// recovery on systems with journaling file systems or SSDs with wear levelling.
+// wipeFile overwrites the file with zeros (best-effort secure erasure).
 func wipeFile(path string) {
 	info, err := os.Stat(path)
 	if err != nil {

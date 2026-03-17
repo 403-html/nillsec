@@ -219,20 +219,18 @@ func cmdEdit(_ []string) error {
 	}
 	defer wipeBytes(text)
 
-	// Create the editor file. On Linux this is in /dev/shm (RAM-only, never
-	// written to disk); on other platforms it falls back to the OS temp dir.
 	ef, err := newEditorFile(text)
 	if err != nil {
 		return err
 	}
-	defer ef.discard() // always clean up, even if the editor or re-encrypt fails
+	defer ef.discard()
 
 	// Open in editor.
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		editor = "vi"
 	}
-	editorCmd := exec.Command(editor, ef.path()) //nolint:gosec // editor path from env
+	editorCmd := exec.Command(editor, ef.path()) //nolint:gosec
 	editorCmd.Stdin = os.Stdin
 	editorCmd.Stdout = os.Stdout
 	editorCmd.Stderr = os.Stderr
@@ -240,7 +238,6 @@ func cmdEdit(_ []string) error {
 		return fmt.Errorf("editor exited with error: %w", err)
 	}
 
-	// Read edited content and wipe/remove the backing file.
 	edited, err := ef.readAndClose()
 	if err != nil {
 		return err

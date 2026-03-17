@@ -7,11 +7,7 @@ import (
 	"os"
 )
 
-// newEditorFile creates a private temp file with the given initial content.
-//
-// The file is created in the OS temp directory with mode 0600 (owner-readable
-// only).  Its contents are zero-wiped and the file is deleted by
-// readAndClose/discard.
+// newEditorFile creates a private temp file (mode 0600) with the given content.
 func newEditorFile(content []byte) (*editorFile, error) {
 	tmp, err := os.CreateTemp("", "nillsec-edit-*.json")
 	if err != nil {

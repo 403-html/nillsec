@@ -7,23 +7,16 @@ import (
 	"os"
 )
 
-// newEditorFile creates a file for editing with the given initial content.
-//
-// On Linux it is placed in /dev/shm, which is a tmpfs mount backed entirely
-// by RAM.  Writes to /dev/shm never reach a physical disk, satisfying the
-// memory-only guarantee.  If /dev/shm is unavailable or unwritable the
-// function silently falls back to the OS temp directory.
+// newEditorFile creates the editor temp file in /dev/shm (RAM-only on Linux).
+// Falls back to os.TempDir() if /dev/shm is unavailable or unwritable.
 func newEditorFile(content []byte) (*editorFile, error) {
-	// /dev/shm is a tmpfs mount on Linux: data lives only in RAM, never on disk.
 	dir := "/dev/shm"
 	if _, err := os.Stat(dir); err != nil {
-		dir = "" // /dev/shm unavailable; fall back to the default temp dir
+		dir = ""
 	}
 
 	tmp, err := os.CreateTemp(dir, "nillsec-edit-*.json")
 	if err != nil && dir != "" {
-		// /dev/shm exists but is not writable (e.g. noexec mount, permissions);
-		// fall back silently to the default temp directory.
 		tmp, err = os.CreateTemp("", "nillsec-edit-*.json")
 	}
 	if err != nil {
