@@ -14,6 +14,7 @@ A simple command-line tool for managing encrypted project secrets stored in a si
 - Secrets are decrypted only in memory; the `edit` command attempts to keep plaintext off disk (using `/dev/shm` on Linux when available — see below)
 - Export secrets as environment variables (`eval "$(nillsec env)"`)
 - Run processes with injected secrets (`nillsec exec -- <command>`)
+
 ## Installation
 
 **Pre-built binary (macOS / Linux / Windows)**
