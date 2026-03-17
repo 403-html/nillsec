@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -317,7 +318,14 @@ func cmdExec(args []string) error {
 	// upper-case to ensure vault values reliably override inherited ones.
 	env := buildChildEnv(os.Environ(), v, runtime.GOOS == "windows")
 
-	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...) //nolint:gosec
+	// Resolve the executable against the child's PATH so that a vault-provided
+	// PATH override takes effect at lookup time rather than the current process PATH.
+	resolvedCmd, err := lookPathInEnv(cmdArgs[0], env)
+	if err != nil {
+		return fmt.Errorf("exec: %w", err)
+	}
+
+	cmd := exec.Command(resolvedCmd, cmdArgs[1:]...) //nolint:gosec
 	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -360,6 +368,50 @@ func buildChildEnv(inherited []string, v *vault.Vault, normalizeKeys bool) []str
 		env = append(env, k+"="+val)
 	}
 	return env
+}
+
+// lookPathInEnv resolves an executable name against the PATH entry found in
+// childEnv, so that a vault-provided PATH override is honoured at lookup time
+// rather than the current process PATH. If name contains a path separator it
+// is returned unchanged. Falls back to exec.LookPath when childEnv has no PATH.
+func lookPathInEnv(name string, childEnv []string) (string, error) {
+	// Explicit or relative path – no directory search needed.
+	if strings.ContainsRune(name, os.PathSeparator) || (runtime.GOOS == "windows" && strings.ContainsRune(name, '/')) {
+		return name, nil
+	}
+
+	// Extract PATH from the child environment.
+	for _, e := range childEnv {
+		k, v, ok := strings.Cut(e, "=")
+		if !ok {
+			continue
+		}
+		keyMatches := k == "PATH"
+		if runtime.GOOS == "windows" {
+			keyMatches = strings.EqualFold(k, "PATH")
+		}
+		if !keyMatches {
+			continue
+		}
+		// Search each directory in the child PATH for an executable.
+		for _, dir := range filepath.SplitList(v) {
+			if dir == "" {
+				dir = "."
+			}
+			candidate := filepath.Join(dir, name)
+			fi, err := os.Stat(candidate)
+			if err != nil || fi.IsDir() {
+				continue
+			}
+			if runtime.GOOS != "windows" && fi.Mode()&0111 == 0 {
+				continue // not executable on Unix
+			}
+			return candidate, nil
+		}
+		return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
+	}
+	// No PATH in child env; fall back to current process PATH.
+	return exec.LookPath(name)
 }
 
 // vaultPath returns the vault file path from args, NILLSEC_VAULT env var,

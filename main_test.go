@@ -301,6 +301,118 @@ func TestBuildChildEnvNoNormalization(t *testing.T) {
 	}
 }
 
+// TestLookPathInEnvUsesChildPath verifies that lookPathInEnv finds an
+// executable in a directory listed in the child env's PATH rather than in
+// the current process PATH.
+func TestLookPathInEnvUsesChildPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable permission bits not applicable on Windows")
+	}
+
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "myfakeexe")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatalf("write executable: %v", err)
+	}
+
+	childEnv := []string{"PATH=" + dir}
+	got, err := lookPathInEnv("myfakeexe", childEnv)
+	if err != nil {
+		t.Fatalf("lookPathInEnv: %v", err)
+	}
+	if got != exe {
+		t.Errorf("resolved path = %q; want %q", got, exe)
+	}
+}
+
+// TestLookPathInEnvExplicitPath verifies that a name containing a path
+// separator is returned as-is without performing a directory search.
+func TestLookPathInEnvExplicitPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("path separator semantics differ on Windows")
+	}
+	name := "/usr/bin/env"
+	childEnv := []string{"PATH=/some/dir"}
+	got, err := lookPathInEnv(name, childEnv)
+	if err != nil {
+		t.Fatalf("lookPathInEnv: %v", err)
+	}
+	if got != name {
+		t.Errorf("got %q; want %q", got, name)
+	}
+}
+
+// TestLookPathInEnvFallback verifies that when childEnv contains no PATH
+// entry, lookPathInEnv falls back to the current process PATH via exec.LookPath.
+func TestLookPathInEnvFallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh not available on Windows")
+	}
+	// "sh" must be resolvable via the current process PATH on any Unix host.
+	got, err := lookPathInEnv("sh", nil /* no PATH entry */)
+	if err != nil {
+		t.Fatalf("lookPathInEnv fallback: %v", err)
+	}
+	if got == "" {
+		t.Error("expected a non-empty resolved path for 'sh'")
+	}
+}
+
+// TestLookPathInEnvNotFound verifies that an error is returned when the
+// executable is not found in the child env PATH.
+func TestLookPathInEnvNotFound(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable permission bits not applicable on Windows")
+	}
+	childEnv := []string{"PATH=/nonexistent/directory"}
+	_, err := lookPathInEnv("no-such-binary", childEnv)
+	if err == nil {
+		t.Fatal("expected error for missing executable, got nil")
+	}
+}
+
+// TestCmdExecUsesVaultPath verifies that cmdExec resolves the command name
+// using the vault-provided PATH rather than the current process PATH.
+func TestCmdExecUsesVaultPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script subprocess not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+
+	// Create a fake executable named "myapp" reachable only via binDir.
+	binDir := filepath.Join(dir, "bin")
+	if err := os.Mkdir(binDir, 0755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	outFile := filepath.Join(dir, "out.txt")
+	fakeExe := filepath.Join(binDir, "myapp")
+	scriptContent := "#!/bin/sh\necho ran > \"" + outFile + "\"\n"
+	if err := os.WriteFile(fakeExe, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("write fake exe: %v", err)
+	}
+
+	// Store binDir as the vault PATH so cmdExec can resolve "myapp" by name.
+	makeTestVault(t, vaultFile, map[string]string{"path": binDir})
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	// "myapp" is not on the current process PATH; only the vault PATH has it.
+	if err := cmdExec([]string{"myapp"}); err != nil {
+		t.Fatalf("cmdExec: %v", err)
+	}
+
+	raw, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read out file: %v", err)
+	}
+	if got := strings.TrimRight(string(raw), "\n\r"); got != "ran" {
+		t.Errorf("output = %q; want %q", got, "ran")
+	}
+}
+
 // TestCmdExecInjectsSecrets verifies that cmdExec injects vault secrets as
 // environment variables into the child process.
 func TestCmdExecInjectsSecrets(t *testing.T) {
