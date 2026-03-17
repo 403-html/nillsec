@@ -118,8 +118,9 @@ nillsec edit
 >   directory.  Its contents are zero-wiped and the file is deleted as soon as
 >   the editor exits.
 >
-> On all platforms the editor file is wiped and deleted on a best-effort basis
-> once the editor exits, before the updated vault is saved.
+> On all platforms the editor file is wiped and removed once the editor exits.
+> If the file cannot be removed, `nillsec` aborts and does not save the vault,
+> so that plaintext is never silently left behind.
 
 ### Export secrets as environment variables
 

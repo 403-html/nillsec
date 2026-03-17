@@ -23,8 +23,9 @@ type editorFile struct {
 // path returns the filesystem path to pass to the editor.
 func (e *editorFile) path() string { return e.fpath }
 
-// discard wipes and removes the editor file.
-// It is idempotent; subsequent calls are no-ops.
+// discard wipes and removes the editor file on a best-effort basis.
+// It is intended for deferred cleanup on error paths where no error can be
+// returned. It is idempotent; subsequent calls are no-ops.
 func (e *editorFile) discard() {
 	if e.closed {
 		return
@@ -36,11 +37,21 @@ func (e *editorFile) discard() {
 
 // readAndClose reads the current file contents, then wipes and removes the
 // backing file. It must be called at most once.
+//
+// Unlike discard, readAndClose returns an error if the file cannot be removed.
+// Callers should treat a removal failure as fatal and abort any further
+// processing (e.g. re-encrypting the vault), so that plaintext is not silently
+// left on disk.
 func (e *editorFile) readAndClose() ([]byte, error) {
-	data, err := os.ReadFile(e.fpath)
-	e.discard() // wipe + remove regardless of read outcome
-	if err != nil {
-		return nil, fmt.Errorf("cannot read editor file: %w", err)
+	data, readErr := os.ReadFile(e.fpath)
+	wipeFile(e.fpath) // best-effort zero-wipe before removal
+	removeErr := os.Remove(e.fpath)
+	e.closed = true // mark closed so any deferred discard() call is a no-op
+	if readErr != nil {
+		return nil, fmt.Errorf("cannot read editor file: %w", readErr)
+	}
+	if removeErr != nil {
+		return nil, fmt.Errorf("cannot remove editor file (plaintext may remain on disk): %w", removeErr)
 	}
 	return data, nil
 }
