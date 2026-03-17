@@ -11,7 +11,7 @@ A simple command-line tool for managing encrypted project secrets stored in a si
 - **AES-256-GCM** authenticated encryption
 - **Argon2id** key derivation (brute-force resistant)
 - Single encrypted vault file — safe to commit to version control
-- Secrets are decrypted only in memory, never written to disk in plaintext (except during `edit`, which uses a temporary file — see below)
+- Secrets are decrypted only in memory, never written to disk in plaintext (the `edit` command writes to `/dev/shm` on Linux — see below)
 - Export secrets as environment variables (`eval "$(nillsec env)"`)
 
 ## Installation
@@ -107,12 +107,19 @@ nillsec remove api_token
 nillsec edit
 ```
 
-> **Security note:** The `edit` command temporarily decrypts vault contents into a
-> plaintext file in the system's temp directory (`os.TempDir()`) so that the editor
-> can open it. The file is created with mode `0600` (owner-readable only), wiped, and
-> deleted as soon as the editor exits. Avoid using `edit` on shared or untrusted
-> machines where the temp directory may be accessible to other users or where the
-> filesystem retains deleted data.
+> **Security note:** The `edit` command temporarily exposes vault plaintext so
+> that the editor can open it.
+>
+> - **Linux** — the file is created in `/dev/shm`, a `tmpfs` mount backed
+>   entirely by RAM.  The decrypted content never reaches a physical disk.
+>   If `/dev/shm` is unavailable or unwritable, `nillsec` falls back to the OS
+>   temp directory.
+> - **Other platforms** — a private temp file (`0600`) is used in the OS temp
+>   directory.  Its contents are zero-wiped and the file is deleted as soon as
+>   the editor exits.
+>
+> On all platforms the editor file is removed before the updated vault is saved,
+> so no plaintext persists after `edit` completes.
 
 ### Export secrets as environment variables
 

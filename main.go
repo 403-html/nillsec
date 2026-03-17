@@ -217,27 +217,22 @@ func cmdEdit(_ []string) error {
 	if err != nil {
 		return err
 	}
+	defer wipeBytes(text)
 
-	// Write decrypted content to a temp file.
-	tmp, err := os.CreateTemp("", "nillsec-edit-*.json")
+	// Create the editor file. On Linux this is in /dev/shm (RAM-only, never
+	// written to disk); on other platforms it falls back to the OS temp dir.
+	ef, err := newEditorFile(text)
 	if err != nil {
-		return fmt.Errorf("cannot create temp file: %w", err)
+		return err
 	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath) // always clean up
-
-	if _, err := tmp.Write(text); err != nil {
-		tmp.Close()
-		return fmt.Errorf("cannot write temp file: %w", err)
-	}
-	tmp.Close()
+	defer ef.discard() // always clean up, even if the editor or re-encrypt fails
 
 	// Open in editor.
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		editor = "vi"
 	}
-	editorCmd := exec.Command(editor, tmpPath) //nolint:gosec // editor path from env
+	editorCmd := exec.Command(editor, ef.path()) //nolint:gosec // editor path from env
 	editorCmd.Stdin = os.Stdin
 	editorCmd.Stdout = os.Stdout
 	editorCmd.Stderr = os.Stderr
@@ -245,25 +240,15 @@ func cmdEdit(_ []string) error {
 		return fmt.Errorf("editor exited with error: %w", err)
 	}
 
-	// Read and re-encrypt.
-	edited, err := os.ReadFile(tmpPath)
+	// Read edited content and wipe/remove the backing file.
+	edited, err := ef.readAndClose()
 	if err != nil {
-		return fmt.Errorf("cannot read edited file: %w", err)
+		return err
 	}
 	defer wipeBytes(edited)
 
 	if err := v.UnmarshalText(edited); err != nil {
 		return err
-	}
-
-	// Remove temp file before writing vault (no plaintext on disk after this).
-	// Overwrite with zeros first for best-effort secure erasure, then remove.
-	// If removal fails, truncation at least eliminates the plaintext content.
-	wipeFile(tmpPath)
-	if err := os.Remove(tmpPath); err != nil {
-		// Best-effort truncate to eliminate plaintext even if Remove failed.
-		_ = os.Truncate(tmpPath, 0)
-		return fmt.Errorf("cannot remove plaintext temp file %s: %w", tmpPath, err)
 	}
 
 	return vault.Save(path, pw, v)
@@ -376,39 +361,6 @@ func wipeBytes(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
-}
-
-// wipeFile overwrites a file with zero bytes for best-effort secure erasure.
-// This is a best-effort measure; it does not guarantee against forensic recovery
-// on systems with journalling file systems or SSDs with wear levelling.
-func wipeFile(path string) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return
-	}
-	size := info.Size()
-	if size == 0 {
-		return
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY, 0)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	const chunkSize = 4096
-	zeros := make([]byte, chunkSize)
-	var written int64
-	for written < size {
-		n := int64(chunkSize)
-		if size-written < n {
-			n = size - written
-		}
-		if _, err := f.Write(zeros[:n]); err != nil {
-			break
-		}
-		written += n
-	}
-	_ = f.Sync()
 }
 
 func printUsage() {
