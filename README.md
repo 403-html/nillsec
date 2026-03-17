@@ -141,6 +141,20 @@ binary in-place, and exits.  If the latest release is a **major version bump**
 asked to confirm before the download begins.  If you are already on the latest
 version, the command simply tells you so and exits without making any changes.
 
+## Comparison with similar tools
+
+| Tool / approach | Encrypted at rest | Git-friendly | Export to env vars | Needs external service | Best fit |
+|---|:---:|:---:|:---:|:---:|---|
+| **nillsec** | ✅ | ✅ | ✅ | No | Local dev & small teams — encrypted secrets in Git with quick env export |
+| Plain `.env` | ❌ | ⚠️ | ✅ | No | Prototypes and non-sensitive config; easy to leak |
+| direnv / dotenv | ❌ | ⚠️ | ✅ | No | Convenient env auto-loading; still plaintext |
+| dotenvx | ✅ | ✅ | ✅ | No | `.env`-style workflow with added encryption; separate key to manage |
+| Ansible Vault / SOPS / git-crypt | ✅ | ✅ | ⚠️ | No | Encrypting files or whole repos; not optimised for env export |
+| OS keychain (envchain, Keychain) | ✅ | ❌ | ✅ | No | Workstation secrets in OS keystore; not portable across machines |
+| Doppler / Infisical / 1Password CLI | ✅ | ❌ | ✅ | **Yes** | Centralised secret lifecycle with sharing, audit, and rotation |
+| CI/CD secrets (GitHub Actions, etc.) | ✅ | ❌ | ✅ | **Yes** | Build and deploy pipelines; not local dev friendly |
+| Vault / Kubernetes Secrets | ✅ | ⚠️ | ❌ | **Yes** | Enterprise platform-level secret management; high complexity |
+
 ## Environment variables
 
 | Variable           | Description                                  | Default         |
