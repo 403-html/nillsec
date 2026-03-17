@@ -145,7 +145,7 @@ version, the command simply tells you so and exits without making any changes.
 
 | Tool / approach | Encrypted at rest | Git-friendly | Export to env vars | Needs external service | Best fit |
 |---|:---:|:---:|:---:|:---:|---|
-| **nillsec** | ✅ | ✅ | ✅ | No | Local dev & small teams — encrypted secrets in Git with quick env export |
+| **nillsec** | ✅ | ✅ | ✅ | No | Local dev & small teams — encrypted secrets in Git with quick env export; separate master password to manage |
 | Plain `.env` | ❌ | ⚠️ | ✅ | No | Prototypes and non-sensitive config; easy to leak |
 | direnv / dotenv | ❌ | ⚠️ | ✅ | No | Convenient env auto-loading; still plaintext |
 | dotenvx | ✅ | ✅ | ✅ | No | `.env`-style workflow with added encryption; separate key to manage |
