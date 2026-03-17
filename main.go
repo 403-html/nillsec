@@ -10,6 +10,7 @@
 //	nillsec remove <key>                  delete a secret
 //	nillsec edit                          open vault in $EDITOR
 //	nillsec env                           export secrets as shell variables
+//	nillsec upgrade                       upgrade nillsec to the latest release
 //
 // The vault file is secrets.vault in the current directory unless
 // NILLSEC_VAULT is set.
@@ -67,6 +68,8 @@ func run(args []string) error {
 		return cmdEdit(rest)
 	case "env":
 		return cmdEnv(rest)
+	case "upgrade":
+		return cmdUpgrade()
 	case "version", "--version", "-v":
 		fmt.Println("nillsec", version)
 		return nil
@@ -372,6 +375,7 @@ Usage:
   nillsec remove <key>          delete a secret
   nillsec edit                  open vault contents in $EDITOR
   nillsec env                   print secrets as export statements
+  nillsec upgrade               upgrade nillsec to the latest release
   nillsec version               print version
 
 Environment:
