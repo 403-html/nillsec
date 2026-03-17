@@ -110,8 +110,10 @@ jobs:
           retention-days: 1
 
   # -----------------------------------------------------------------------
-  # Download all binaries, compute SHA-256 checksums, and upload all
-  # assets to the already-created GitHub Release.
+  # Download all binaries, compute SHA-256 checksums, create a draft
+  # GitHub Release with all assets attached, then publish it. Creating
+  # the release as a draft first ensures users never encounter a
+  # published release that is missing assets.
   # -----------------------------------------------------------------------
   release:
     name: Publish Release
@@ -132,10 +134,18 @@ jobs:
         run: |
           sha256sum nillsec-* | tee checksums.txt
 
-      - name: Upload assets to release
+      - name: Create draft release with assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ github.ref_name }}" \
+          gh release create "${{ github.ref_name }}" \
             dist/nillsec-* dist/checksums.txt \
-            --clobber
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            --draft
+
+      - name: Publish release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ github.ref_name }}" --draft=false
