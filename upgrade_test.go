@@ -308,3 +308,47 @@ func TestCmdUpgradeMajorVersionConfirmed(t *testing.T) {
 		t.Errorf("updated binary content = %q; want %q", string(got), fakeContent)
 	}
 }
+
+func TestInstallViaDestDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file permission test not applicable on Windows")
+	}
+
+	content := "#!/bin/sh\necho installed\n"
+
+	// Create source file in a separate temp directory (simulating a download
+	// that landed in the system temp directory on a different filesystem).
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, ".nillsec-upgrade-src")
+	if err := os.WriteFile(srcPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing source file: %v", err)
+	}
+
+	// Create a destination directory with an existing binary.
+	dstDir := t.TempDir()
+	dstPath := filepath.Join(dstDir, "nillsec")
+	if err := os.WriteFile(dstPath, []byte("old"), 0o755); err != nil {
+		t.Fatalf("writing old binary: %v", err)
+	}
+
+	if err := installViaDestDir(srcPath, dstPath); err != nil {
+		t.Fatalf("installViaDestDir: unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(dstPath)
+	if err != nil {
+		t.Fatalf("reading installed binary: %v", err)
+	}
+	if string(got) != content {
+		t.Errorf("installed binary content = %q; want %q", string(got), content)
+	}
+
+	// Verify executable permission was set.
+	info, err := os.Stat(dstPath)
+	if err != nil {
+		t.Fatalf("stat installed binary: %v", err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Errorf("installed binary is not executable (mode %o)", info.Mode())
+	}
+}
