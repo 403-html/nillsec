@@ -257,8 +257,9 @@ func cmdEdit(_ []string) error {
 	}
 
 	// Remove temp file before writing vault (no plaintext on disk after this).
-	// If removal fails, truncate the file to eliminate the plaintext before
-	// returning an error so the vault is not saved with plaintext still on disk.
+	// Overwrite with zeros first for best-effort secure erasure, then remove.
+	// If removal fails, truncation at least eliminates the plaintext content.
+	wipeFile(tmpPath)
 	if err := os.Remove(tmpPath); err != nil {
 		// Best-effort truncate to eliminate plaintext even if Remove failed.
 		_ = os.Truncate(tmpPath, 0)
@@ -375,6 +376,39 @@ func wipeBytes(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
+}
+
+// wipeFile overwrites a file with zero bytes for best-effort secure erasure.
+// This is a best-effort measure; it does not guarantee against forensic recovery
+// on systems with journalling file systems or SSDs with wear levelling.
+func wipeFile(path string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	size := info.Size()
+	if size == 0 {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	const chunkSize = 4096
+	zeros := make([]byte, chunkSize)
+	var written int64
+	for written < size {
+		n := int64(chunkSize)
+		if size-written < n {
+			n = size - written
+		}
+		if _, err := f.Write(zeros[:n]); err != nil {
+			break
+		}
+		written += n
+	}
+	_ = f.Sync()
 }
 
 func printUsage() {
