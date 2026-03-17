@@ -36,13 +36,14 @@ type githubRelease struct {
 // parseMajorVersion returns the major version number from a semver string
 // such as "v1.2.3" or "2.0.0".
 func parseMajorVersion(v string) (int, error) {
+	orig := v
 	v = strings.TrimPrefix(v, "v")
 	if dot := strings.IndexByte(v, '.'); dot >= 0 {
 		v = v[:dot]
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		return 0, fmt.Errorf("invalid version %q: %w", v, err)
+		return 0, fmt.Errorf("invalid version %q: %w", orig, err)
 	}
 	return n, nil
 }
@@ -77,7 +78,7 @@ func cmdUpgrade() error {
 	}
 
 	latest := rel.TagName
-	if latest == version {
+	if strings.TrimPrefix(latest, "v") == strings.TrimPrefix(version, "v") {
 		fmt.Printf("nillsec is already up to date (%s).\n", version)
 		return nil
 	}
