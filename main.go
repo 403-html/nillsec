@@ -285,16 +285,14 @@ func cmdEnv(_ []string) error {
 }
 
 func cmdExec(args []string) error {
-	// Strip an optional "--" separator so that both
+	// Strip a leading "--" separator so that both
 	//   nillsec exec -- npm run dev
 	//   nillsec exec npm run dev
-	// work correctly.
+	// work correctly.  Only the very first argument is checked; any subsequent
+	// "--" is left in place and passed through to the child command as-is.
 	cmdArgs := args
-	for i, a := range args {
-		if a == "--" {
-			cmdArgs = args[i+1:]
-			break
-		}
+	if len(args) > 0 && args[0] == "--" {
+		cmdArgs = args[1:]
 	}
 	if len(cmdArgs) == 0 {
 		return fmt.Errorf("usage: nillsec exec [--] <command> [args...]")

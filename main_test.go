@@ -285,6 +285,49 @@ func TestCmdExecWithoutDoubleDash(t *testing.T) {
 	}
 }
 
+// TestCmdExecDoubleDashPassthrough verifies that a "--" that is NOT the first
+// argument is passed through to the child command unchanged.  For example:
+//
+//	nillsec exec some-tool -- --flag
+//
+// should invoke some-tool with the arguments ["--", "--flag"], not strip the
+// "--" and try to run "--flag" as the command.
+func TestCmdExecDoubleDashPassthrough(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script subprocess not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, nil)
+
+	// Script that writes its first argument to a file so we can verify it
+	// received "--" intact.
+	outFile := filepath.Join(dir, "out.txt")
+	script := filepath.Join(dir, "record-arg.sh")
+	scriptContent := "#!/bin/sh\necho \"$1\" > \"" + outFile + "\"\n"
+	if err := os.WriteFile(script, []byte(scriptContent), 0700); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	// Pass "--" as an argument to the script, not as a separator.
+	if err := cmdExec([]string{script, "--", "--flag"}); err != nil {
+		t.Fatalf("cmdExec: %v", err)
+	}
+
+	raw, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read out file: %v", err)
+	}
+	got := strings.TrimRight(string(raw), "\n\r")
+	if got != "--" {
+		t.Errorf("first arg = %q; want %q (-- should not be consumed when not the first arg)", got, "--")
+	}
+}
+
 // TestCmdExecNoArgs verifies that an error is returned when no command is given.
 func TestCmdExecNoArgs(t *testing.T) {
 	dir := t.TempDir()
