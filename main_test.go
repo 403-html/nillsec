@@ -9,7 +9,6 @@ import (
 
 	"github.com/403-html/nillsec/vault"
 )
-
 const editTestPassword = "edit-test-password"
 
 // makeTestVault initialises a vault at path and optionally seeds it with secrets.
@@ -209,5 +208,131 @@ func TestCmdEditUsesDevShm(t *testing.T) {
 
 	if !strings.HasPrefix(editorPath, "/dev/shm/") {
 		t.Errorf("editor file path %q does not start with /dev/shm/; plaintext may have been written to disk", editorPath)
+	}
+}
+
+// TestCmdExecInjectsSecrets verifies that cmdExec injects vault secrets as
+// environment variables into the child process.
+func TestCmdExecInjectsSecrets(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script subprocess not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, map[string]string{
+		"my_secret": "hunter2",
+		"api_token": "tok-abc",
+	})
+
+	// Script that writes the value of MY_SECRET to a file.
+	outFile := filepath.Join(dir, "out.txt")
+	script := filepath.Join(dir, "check-env.sh")
+	scriptContent := "#!/bin/sh\necho \"$MY_SECRET\" > \"" + outFile + "\"\n"
+	if err := os.WriteFile(script, []byte(scriptContent), 0700); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	if err := cmdExec([]string{"--", script}); err != nil {
+		t.Fatalf("cmdExec: %v", err)
+	}
+
+	raw, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read out file: %v", err)
+	}
+	got := strings.TrimRight(string(raw), "\n\r")
+	if got != "hunter2" {
+		t.Errorf("MY_SECRET = %q; want %q", got, "hunter2")
+	}
+}
+
+// TestCmdExecWithoutDoubleDash verifies that the "--" separator is optional.
+func TestCmdExecWithoutDoubleDash(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script subprocess not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, map[string]string{"token": "secret-value"})
+
+	outFile := filepath.Join(dir, "out.txt")
+	script := filepath.Join(dir, "check-env.sh")
+	scriptContent := "#!/bin/sh\necho \"$TOKEN\" > \"" + outFile + "\"\n"
+	if err := os.WriteFile(script, []byte(scriptContent), 0700); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	// No "--" separator.
+	if err := cmdExec([]string{script}); err != nil {
+		t.Fatalf("cmdExec: %v", err)
+	}
+
+	raw, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read out file: %v", err)
+	}
+	got := strings.TrimRight(string(raw), "\n\r")
+	if got != "secret-value" {
+		t.Errorf("TOKEN = %q; want %q", got, "secret-value")
+	}
+}
+
+// TestCmdExecNoArgs verifies that an error is returned when no command is given.
+func TestCmdExecNoArgs(t *testing.T) {
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, nil)
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	if err := cmdExec([]string{"--"}); err == nil {
+		t.Fatal("cmdExec with no command: expected error, got nil")
+	}
+
+	if err := cmdExec([]string{}); err == nil {
+		t.Fatal("cmdExec with empty args: expected error, got nil")
+	}
+}
+
+// TestCmdExecExitCodePropagation verifies that a non-zero exit from the child
+// process causes osExitFn to be called with the matching code.
+func TestCmdExecExitCodePropagation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script subprocess not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, nil)
+
+	// Script that exits with code 42.
+	script := filepath.Join(dir, "fail.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 42\n"), 0700); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	var capturedCode int
+	origOsExitFn := osExitFn
+	t.Cleanup(func() { osExitFn = origOsExitFn })
+	osExitFn = func(code int) { capturedCode = code }
+
+	if err := cmdExec([]string{"--", script}); err != nil {
+		t.Fatalf("cmdExec: unexpected error: %v", err)
+	}
+
+	if capturedCode != 42 {
+		t.Errorf("exit code = %d; want 42", capturedCode)
 	}
 }

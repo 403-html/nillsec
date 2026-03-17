@@ -10,6 +10,7 @@
 //	nillsec remove <key>                  delete a secret
 //	nillsec edit                          open vault in $EDITOR
 //	nillsec env                           export secrets as shell variables
+//	nillsec exec [--] <cmd> [args...]     run a command with secrets injected
 //	nillsec upgrade                       upgrade nillsec to the latest release
 //
 // The vault file is secrets.vault in the current directory unless
@@ -19,6 +20,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,6 +34,9 @@ import (
 
 // version is set at build time via -ldflags "-X main.version=<tag>".
 var version = "dev"
+
+// osExitFn exits the process with the given code; overridable in tests.
+var osExitFn = os.Exit
 
 // validKeyRe matches valid POSIX shell identifier names (used as env var names).
 var validKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -68,6 +73,8 @@ func run(args []string) error {
 		return cmdEdit(rest)
 	case "env":
 		return cmdEnv(rest)
+	case "exec":
+		return cmdExec(rest)
 	case "upgrade":
 		return cmdUpgrade()
 	case "version", "--version", "-v":
@@ -277,6 +284,66 @@ func cmdEnv(_ []string) error {
 	return nil
 }
 
+func cmdExec(args []string) error {
+	// Strip an optional "--" separator so that both
+	//   nillsec exec -- npm run dev
+	//   nillsec exec npm run dev
+	// work correctly.
+	cmdArgs := args
+	for i, a := range args {
+		if a == "--" {
+			cmdArgs = args[i+1:]
+			break
+		}
+	}
+	if len(cmdArgs) == 0 {
+		return fmt.Errorf("usage: nillsec exec [--] <command> [args...]")
+	}
+
+	path := vaultPath(nil)
+	pw, err := promptPassword("Master password: ")
+	if err != nil {
+		return err
+	}
+	defer wipeBytes(pw)
+
+	v, err := vault.Load(path, pw)
+	if err != nil {
+		return err
+	}
+
+	// Build the child's environment: inherit the current environment, then
+	// overlay vault secrets so they take precedence over any existing values.
+	envMap := make(map[string]string)
+	for _, e := range os.Environ() {
+		k, val, _ := strings.Cut(e, "=")
+		envMap[k] = val
+	}
+	for _, k := range v.Keys() {
+		val, _ := v.Get(k)
+		envMap[strings.ToUpper(k)] = val
+	}
+	env := make([]string, 0, len(envMap))
+	for k, val := range envMap {
+		env = append(env, k+"="+val)
+	}
+
+	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...) //nolint:gosec
+	cmd.Env = env
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			osExitFn(exitErr.ExitCode())
+			return nil
+		}
+		return fmt.Errorf("exec: %w", err)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -375,6 +442,7 @@ Usage:
   nillsec remove <key>          delete a secret
   nillsec edit                  open vault contents in $EDITOR
   nillsec env                   print secrets as export statements
+  nillsec exec [--] <cmd> ...   run a command with secrets injected as env vars
   nillsec upgrade               upgrade nillsec to the latest release
   nillsec version               print version
 
