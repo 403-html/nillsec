@@ -13,6 +13,7 @@ A simple command-line tool for managing encrypted project secrets stored in a si
 - Single encrypted vault file — safe to commit to version control
 - Secrets are decrypted only in memory; the `edit` command attempts to keep plaintext off disk (using `/dev/shm` on Linux when available — see below)
 - Export secrets as environment variables (`eval "$(nillsec env)"`)
+- Run processes with injected secrets (`nillsec exec -- <command>`)
 
 ## Installation
 
@@ -129,6 +130,21 @@ eval "$(nillsec env)"
 # Sets DATABASE_PASSWORD and API_TOKEN in the current shell.
 ```
 
+### Run a command with secrets injected
+
+```sh
+nillsec exec -- npm run dev
+```
+
+Secrets are injected as environment variables into the child process directly — no shell expansion occurs, so there is no risk of secret values being interpreted as shell code. Vault secrets take precedence over any identically-named variables already present in the environment.
+
+```sh
+nillsec exec -- python manage.py runserver
+nillsec exec -- docker compose up
+```
+
+The `--` separator is optional but recommended to clearly distinguish nillsec flags from the command being run.
+
 ### Upgrade to the latest release
 
 ```sh
@@ -173,4 +189,7 @@ nillsec add api_token token123
 # Later, in any script or shell session:
 eval "$(nillsec env)"
 echo "$DATABASE_PASSWORD"
+
+# Or run a command directly with secrets injected:
+nillsec exec -- npm run dev
 ```

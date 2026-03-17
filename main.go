@@ -10,6 +10,7 @@
 //	nillsec remove <key>                  delete a secret
 //	nillsec edit                          open vault in $EDITOR
 //	nillsec env                           export secrets as shell variables
+//	nillsec exec [--] <cmd> [args...]     run a command with secrets injected
 //	nillsec upgrade                       upgrade nillsec to the latest release
 //
 // The vault file is secrets.vault in the current directory unless
@@ -19,10 +20,13 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -32,6 +36,9 @@ import (
 
 // version is set at build time via -ldflags "-X main.version=<tag>".
 var version = "dev"
+
+// osExitFn exits the process with the given code; overridable in tests.
+var osExitFn = os.Exit
 
 // validKeyRe matches valid POSIX shell identifier names (used as env var names).
 var validKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -68,6 +75,8 @@ func run(args []string) error {
 		return cmdEdit(rest)
 	case "env":
 		return cmdEnv(rest)
+	case "exec":
+		return cmdExec(rest)
 	case "upgrade":
 		return cmdUpgrade()
 	case "version", "--version", "-v":
@@ -277,9 +286,133 @@ func cmdEnv(_ []string) error {
 	return nil
 }
 
+func cmdExec(args []string) error {
+	// Strip a leading "--" separator so that both
+	//   nillsec exec -- npm run dev
+	//   nillsec exec npm run dev
+	// work correctly.  Only the very first argument is checked; any subsequent
+	// "--" is left in place and passed through to the child command as-is.
+	cmdArgs := args
+	if len(args) > 0 && args[0] == "--" {
+		cmdArgs = args[1:]
+	}
+	if len(cmdArgs) == 0 {
+		return fmt.Errorf("usage: nillsec exec [--] <command> [args...]")
+	}
+
+	path := vaultPath(nil)
+	pw, err := promptPassword("Master password: ")
+	if err != nil {
+		return err
+	}
+	defer wipeBytes(pw)
+
+	v, err := vault.Load(path, pw)
+	if err != nil {
+		return err
+	}
+
+	// Build the child's environment: inherit the current environment, then
+	// overlay vault secrets so they take precedence over any existing values.
+	// On Windows, env-var keys are case-insensitive, so we normalize them to
+	// upper-case to ensure vault values reliably override inherited ones.
+	env := buildChildEnv(os.Environ(), v, runtime.GOOS == "windows")
+
+	// Resolve the executable against the child's PATH so that a vault-provided
+	// PATH override takes effect at lookup time rather than the current process PATH.
+	resolvedCmd, err := lookPathInEnv(cmdArgs[0], env)
+	if err != nil {
+		return fmt.Errorf("exec: %w", err)
+	}
+
+	cmd := exec.Command(resolvedCmd, cmdArgs[1:]...) //nolint:gosec
+	cmd.Env = env
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			osExitFn(exitErr.ExitCode())
+			return nil
+		}
+		return fmt.Errorf("exec: %w", err)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// buildChildEnv merges an inherited environment slice with vault secrets.
+// Vault values are always upper-cased and take precedence over any inherited
+// entry with the same name. When normalizeKeys is true (Windows), inherited
+// keys are upper-cased before the merge so that mixed-case names such as
+// "Path" do not survive alongside the upper-cased vault key "PATH".
+func buildChildEnv(inherited []string, v *vault.Vault, normalizeKeys bool) []string {
+	envMap := make(map[string]string, len(inherited))
+	for _, e := range inherited {
+		k, val, _ := strings.Cut(e, "=")
+		if normalizeKeys {
+			k = strings.ToUpper(k)
+		}
+		envMap[k] = val
+	}
+	for _, k := range v.Keys() {
+		val, _ := v.Get(k)
+		envMap[strings.ToUpper(k)] = val
+	}
+	env := make([]string, 0, len(envMap))
+	for k, val := range envMap {
+		env = append(env, k+"="+val)
+	}
+	return env
+}
+
+// lookPathInEnv resolves an executable name against the PATH entry found in
+// childEnv, so that a vault-provided PATH override is honoured at lookup time
+// rather than the current process PATH. If name contains a path separator it
+// is returned unchanged. Falls back to exec.LookPath when childEnv has no PATH.
+func lookPathInEnv(name string, childEnv []string) (string, error) {
+	// Explicit or relative path – no directory search needed.
+	if strings.ContainsRune(name, os.PathSeparator) || (runtime.GOOS == "windows" && strings.ContainsRune(name, '/')) {
+		return name, nil
+	}
+
+	// Extract PATH from the child environment.
+	for _, e := range childEnv {
+		k, v, ok := strings.Cut(e, "=")
+		if !ok {
+			continue
+		}
+		keyMatches := k == "PATH"
+		if runtime.GOOS == "windows" {
+			keyMatches = strings.EqualFold(k, "PATH")
+		}
+		if !keyMatches {
+			continue
+		}
+		// Search each directory in the child PATH for an executable.
+		for _, dir := range filepath.SplitList(v) {
+			if dir == "" {
+				dir = "."
+			}
+			candidate := filepath.Join(dir, name)
+			fi, err := os.Stat(candidate)
+			if err != nil || fi.IsDir() {
+				continue
+			}
+			if runtime.GOOS != "windows" && fi.Mode()&0111 == 0 {
+				continue // not executable on Unix
+			}
+			return candidate, nil
+		}
+		return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
+	}
+	// No PATH in child env; fall back to current process PATH.
+	return exec.LookPath(name)
+}
 
 // vaultPath returns the vault file path from args, NILLSEC_VAULT env var,
 // or the default "secrets.vault".
@@ -375,6 +508,7 @@ Usage:
   nillsec remove <key>          delete a secret
   nillsec edit                  open vault contents in $EDITOR
   nillsec env                   print secrets as export statements
+  nillsec exec [--] <cmd> ...   run a command with secrets injected as env vars
   nillsec upgrade               upgrade nillsec to the latest release
   nillsec version               print version
 
