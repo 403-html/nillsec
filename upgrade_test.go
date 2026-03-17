@@ -309,6 +309,60 @@ func TestCmdUpgradeMajorVersionConfirmed(t *testing.T) {
 	}
 }
 
+func TestDownloadAndInstallPermissionDenied(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file permission test not applicable on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("test is not meaningful when running as root")
+	}
+
+	assetName := upgradeAssetName()
+	binaryName := strings.TrimSuffix(assetName, ".tar.gz")
+	tarData := makeFakeTarGz(t, binaryName, "#!/bin/sh\necho new\n")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write(tarData); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	// Place the fake binary inside a read-only directory so that os.Rename
+	// into it fails with a permission error (not a cross-device error).
+	dstDir := t.TempDir()
+	dstPath := filepath.Join(dstDir, "nillsec")
+	if err := os.WriteFile(dstPath, []byte("old"), 0o755); err != nil {
+		t.Fatalf("writing old binary: %v", err)
+	}
+	if err := os.Chmod(dstDir, 0o555); err != nil {
+		t.Fatalf("chmod dstDir: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(dstDir, 0o755) }) //nolint:errcheck
+
+	err := downloadAndInstall(srv.URL+"/download/"+assetName, assetName, dstPath)
+	if err == nil {
+		t.Fatal("downloadAndInstall: expected error for permission-denied destination, got nil")
+	}
+
+	// The error should mention elevated privileges and not "check write permissions".
+	if strings.Contains(err.Error(), "check write permissions") {
+		t.Errorf("downloadAndInstall: error should not mention 'check write permissions', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "elevated privileges") {
+		t.Errorf("downloadAndInstall: error should mention 'elevated privileges', got: %v", err)
+	}
+
+	// The original binary must be untouched.
+	got, err2 := os.ReadFile(dstPath)
+	if err2 != nil {
+		t.Fatalf("reading binary after failed upgrade: %v", err2)
+	}
+	if string(got) != "old" {
+		t.Errorf("binary was modified despite permission error, got: %q", string(got))
+	}
+}
+
 func TestInstallViaDestDir(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("file permission test not applicable on Windows")

@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -252,6 +254,16 @@ func downloadAndInstall(url, assetName, exePath string) error {
 		// directory and the binary directory are on different filesystems.
 		// Fall back to copying the downloaded file into a temp file inside
 		// the destination directory and renaming from there.
+		//
+		// For any other error (e.g. permission denied), the fallback will not
+		// help either, so surface the error directly with a useful hint.
+		var linkErr *os.LinkError
+		if !errors.As(err, &linkErr) || !errors.Is(linkErr.Err, syscall.EXDEV) {
+			if os.IsPermission(err) {
+				return fmt.Errorf("replacing binary (try running with elevated privileges, e.g. sudo): %w", err)
+			}
+			return fmt.Errorf("replacing binary: %w", err)
+		}
 		if err2 := installViaDestDir(tmpName, exePath); err2 != nil {
 			return err2
 		}
