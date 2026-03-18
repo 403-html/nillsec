@@ -123,13 +123,6 @@ nillsec edit
 > If the file cannot be removed, `nillsec` aborts and does not save the vault,
 > so that plaintext is never silently left behind.
 
-### Export secrets as environment variables
-
-```sh
-eval "$(nillsec env)"
-# Sets DATABASE_PASSWORD and API_TOKEN in the current shell.
-```
-
 ### Run a command with secrets injected
 
 ```sh
@@ -141,9 +134,21 @@ Secrets are injected as environment variables into the child process directly â€
 ```sh
 nillsec exec -- python manage.py runserver
 nillsec exec -- docker compose up
+
+# Open a secure shell with all secrets available as env vars:
+nillsec exec -- $SHELL
 ```
 
 The `--` separator is optional but recommended to clearly distinguish nillsec flags from the command being run.
+
+### Export secrets as environment variables
+
+If you need to export secrets into your current shell session rather than running a subprocess, use:
+
+```sh
+eval "$(nillsec env)"
+# Sets DATABASE_PASSWORD and API_TOKEN in the current shell.
+```
 
 ### Upgrade to the latest release
 
@@ -186,10 +191,13 @@ nillsec init
 nillsec add database_password secret
 nillsec add api_token token123
 
-# Later, in any script or shell session:
+# Run a command directly with secrets injected:
+nillsec exec -- npm run dev
+
+# Or open a shell with all secrets available:
+nillsec exec -- $SHELL
+
+# If you need the secrets exported into your current shell session:
 eval "$(nillsec env)"
 echo "$DATABASE_PASSWORD"
-
-# Or run a command directly with secrets injected:
-nillsec exec -- npm run dev
 ```
