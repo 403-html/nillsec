@@ -312,6 +312,183 @@ func TestLoadRejectsTruncatedNonce(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// File operations
+// ---------------------------------------------------------------------------
+
+func TestSetAndGetFile(t *testing.T) {
+	v := newVault(t)
+	content := []byte("hello binary\x00world")
+	v.SetFile("readme.txt", content)
+	got, ok := v.GetFile("readme.txt")
+	if !ok {
+		t.Fatal("GetFile returned ok=false for file that was just set")
+	}
+	if string(got) != string(content) {
+		t.Errorf("GetFile content = %q, want %q", got, content)
+	}
+}
+
+func TestSetFileMakesCopy(t *testing.T) {
+	v := newVault(t)
+	original := []byte("original content")
+	v.SetFile("f.txt", original)
+	// Mutate the original slice — the vault copy must be unaffected.
+	original[0] = 'X'
+	got, _ := v.GetFile("f.txt")
+	if got[0] == 'X' {
+		t.Error("SetFile stored a reference instead of a copy")
+	}
+}
+
+func TestSetFileOverwrites(t *testing.T) {
+	v := newVault(t)
+	v.SetFile("f.txt", []byte("old"))
+	v.SetFile("f.txt", []byte("new"))
+	got, _ := v.GetFile("f.txt")
+	if string(got) != "new" {
+		t.Errorf("GetFile = %q, want %q", got, "new")
+	}
+}
+
+func TestGetFileMissing(t *testing.T) {
+	v := newVault(t)
+	_, ok := v.GetFile("nonexistent.txt")
+	if ok {
+		t.Fatal("expected ok=false for missing file")
+	}
+}
+
+func TestDeleteFile(t *testing.T) {
+	v := newVault(t)
+	v.SetFile("f.txt", []byte("data"))
+	if !v.DeleteFile("f.txt") {
+		t.Fatal("DeleteFile returned false for existing file")
+	}
+	if _, ok := v.GetFile("f.txt"); ok {
+		t.Fatal("file still present after DeleteFile")
+	}
+}
+
+func TestDeleteFileMissing(t *testing.T) {
+	v := newVault(t)
+	if v.DeleteFile("nonexistent.txt") {
+		t.Fatal("DeleteFile returned true for missing file")
+	}
+}
+
+func TestFileNamesSorted(t *testing.T) {
+	v := newVault(t)
+	v.SetFile("zebra.bin", []byte("z"))
+	v.SetFile("alpha.bin", []byte("a"))
+	v.SetFile("mango.bin", []byte("m"))
+	names := v.FileNames()
+	want := []string{"alpha.bin", "mango.bin", "zebra.bin"}
+	if len(names) != len(want) {
+		t.Fatalf("FileNames len = %d, want %d", len(names), len(want))
+	}
+	for i, n := range names {
+		if n != want[i] {
+			t.Errorf("FileNames[%d] = %q, want %q", i, n, want[i])
+		}
+	}
+}
+
+func TestFileNamesEmptyVault(t *testing.T) {
+	v := newVault(t)
+	if names := v.FileNames(); len(names) != 0 {
+		t.Errorf("expected no file names, got %v", names)
+	}
+}
+
+func TestFileRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.vault")
+	if err := vault.Init(path, testPW()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	v, err := vault.Load(path, testPW())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	content := []byte("binary content\x00\xff\xfe")
+	v.SetFile("config.bin", content)
+	if err := vault.Save(path, testPW(), v); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	v2, err := vault.Load(path, testPW())
+	if err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	got, ok := v2.GetFile("config.bin")
+	if !ok {
+		t.Fatal("file not found after save/load round-trip")
+	}
+	if string(got) != string(content) {
+		t.Errorf("file content = %q, want %q", got, content)
+	}
+}
+
+func TestOldVaultWithoutFilesField(t *testing.T) {
+	// Simulate a vault written by an older version (no "files" key in JSON).
+	// The new code must load it without error and return empty FileNames.
+	path := filepath.Join(t.TempDir(), "secrets.vault")
+	if err := vault.Init(path, testPW()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	v, err := vault.Load(path, testPW())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// A freshly initialised vault has no files (equivalent to an old vault
+	// whose JSON payload predates the files field).
+	if names := v.FileNames(); len(names) != 0 {
+		t.Errorf("expected no files in legacy vault, got %v", names)
+	}
+	// Secrets must still be accessible.
+	v.Set("key", "val")
+	if err := vault.Save(path, testPW(), v); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	v2, err := vault.Load(path, testPW())
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if val, ok := v2.Get("key"); !ok || val != "val" {
+		t.Errorf("Get after legacy-compat round-trip = %q, %v; want val, true", val, ok)
+	}
+}
+
+func TestFilesCoexistWithSecrets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.vault")
+	if err := vault.Init(path, testPW()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	v, err := vault.Load(path, testPW())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	v.Set("api_key", "abc123")
+	v.SetFile("cert.pem", []byte("PEM DATA"))
+	if err := vault.Save(path, testPW(), v); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	v2, err := vault.Load(path, testPW())
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if val, ok := v2.Get("api_key"); !ok || val != "abc123" {
+		t.Errorf("secret missing after file save")
+	}
+	if data, ok := v2.GetFile("cert.pem"); !ok || string(data) != "PEM DATA" {
+		t.Errorf("file missing after secret save")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

@@ -11,6 +11,11 @@
 //	nillsec edit                          open vault in $EDITOR
 //	nillsec env                           export secrets as shell variables
 //	nillsec exec [--] <cmd> [args...]     run a command with secrets injected
+//	nillsec file-add  <name> <path>       encrypt a file into the vault
+//	nillsec file-set  <name> <path>       encrypt/overwrite a file in the vault
+//	nillsec file-get  <name> [<path>]     decrypt a file from the vault to <path> (default: <name>)
+//	nillsec file-list                     list stored file names
+//	nillsec file-remove <name>            remove a stored file from the vault
 //	nillsec upgrade                       upgrade nillsec to the latest release
 //
 // The vault file is secrets.vault in the current directory unless
@@ -77,6 +82,16 @@ func run(args []string) error {
 		return cmdEnv(rest)
 	case "exec":
 		return cmdExec(rest)
+	case "file-add":
+		return cmdFileAdd(rest, false)
+	case "file-set":
+		return cmdFileAdd(rest, true)
+	case "file-get":
+		return cmdFileGet(rest)
+	case "file-list":
+		return cmdFileList(rest)
+	case "file-remove", "file-rm":
+		return cmdFileRemove(rest)
 	case "upgrade":
 		return cmdUpgrade()
 	case "version", "--version", "-v":
@@ -208,6 +223,121 @@ func cmdRemove(args []string) error {
 
 	if !v.Delete(key) {
 		return fmt.Errorf("key not found: %q", key)
+	}
+	return vault.Save(path, pw, v)
+}
+
+func cmdFileAdd(args []string, overwrite bool) error {
+	cmdName := map[bool]string{true: "file-set", false: "file-add"}[overwrite]
+	if len(args) < 2 {
+		return fmt.Errorf("usage: nillsec %s <name> <path>", cmdName)
+	}
+	name, filePath := args[0], args[1]
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("cannot read file %q: %w", filePath, err)
+	}
+	defer wipeBytes(data)
+
+	path := vaultPath(nil)
+	pw, err := promptPassword("Master password: ")
+	if err != nil {
+		return err
+	}
+	defer wipeBytes(pw)
+
+	v, err := vault.Load(path, pw)
+	if err != nil {
+		return err
+	}
+
+	if !overwrite {
+		if _, exists := v.GetFile(name); exists {
+			return fmt.Errorf("file %q already exists in vault; use 'file-set' to overwrite", name)
+		}
+	}
+
+	v.SetFile(name, data)
+	return vault.Save(path, pw, v)
+}
+
+func cmdFileGet(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: nillsec file-get <name> [<path>|-]")
+	}
+	name := args[0]
+	// Default output path is the stored name itself (written to the current
+	// directory).  Pass "-" explicitly to write to stdout instead.
+	outPath := name
+	if len(args) >= 2 {
+		outPath = args[1]
+	}
+
+	path := vaultPath(nil)
+	pw, err := promptPassword("Master password: ")
+	if err != nil {
+		return err
+	}
+	defer wipeBytes(pw)
+
+	v, err := vault.Load(path, pw)
+	if err != nil {
+		return err
+	}
+
+	data, ok := v.GetFile(name)
+	if !ok {
+		return fmt.Errorf("file not found in vault: %q", name)
+	}
+	defer wipeBytes(data)
+
+	if outPath == "-" {
+		_, err = os.Stdout.Write(data)
+		return err
+	}
+	return os.WriteFile(outPath, data, 0600)
+}
+
+func cmdFileList(_ []string) error {
+	path := vaultPath(nil)
+	pw, err := promptPassword("Master password: ")
+	if err != nil {
+		return err
+	}
+	defer wipeBytes(pw)
+
+	v, err := vault.Load(path, pw)
+	if err != nil {
+		return err
+	}
+
+	for _, n := range v.FileNames() {
+		fmt.Println(n)
+	}
+	return nil
+}
+
+func cmdFileRemove(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: nillsec file-remove <name>")
+	}
+	name := args[0]
+
+	path := vaultPath(nil)
+	pw, err := promptPassword("Master password: ")
+	if err != nil {
+		return err
+	}
+	defer wipeBytes(pw)
+
+	v, err := vault.Load(path, pw)
+	if err != nil {
+		return err
+	}
+
+	if !v.DeleteFile(name) {
+		return fmt.Errorf("file not found in vault: %q", name)
 	}
 	return vault.Save(path, pw, v)
 }
@@ -509,6 +639,13 @@ Usage:
   nillsec edit                  open vault contents in $EDITOR
   nillsec env                   print secrets as export statements
   nillsec exec [--] <cmd> ...   run a command with secrets injected as env vars
+
+  nillsec file-add  <name> <path>   encrypt a file into the vault (error if name exists)
+  nillsec file-set  <name> <path>   encrypt a file into the vault (overwrite if exists)
+  nillsec file-get  <name> [<path>] decrypt a file from the vault to <path> (default: <name>); use - for stdout
+  nillsec file-list                 list stored file names
+  nillsec file-remove <name>        remove a stored file from the vault
+
   nillsec upgrade               upgrade nillsec to the latest release
   nillsec version               print version
 

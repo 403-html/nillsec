@@ -548,7 +548,281 @@ func TestCmdExecNoArgs(t *testing.T) {
 	}
 }
 
-// TestCmdExecExitCodePropagation verifies that a non-zero exit from the child
+// ---------------------------------------------------------------------------
+// file-add / file-set / file-get / file-list / file-remove
+// ---------------------------------------------------------------------------
+
+func TestCmdFileAddAndGet(t *testing.T) {
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, nil)
+
+	srcFile := filepath.Join(dir, "secret.bin")
+	content := []byte("binary\x00data\xff")
+	if err := os.WriteFile(srcFile, content, 0600); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	if err := run([]string{"file-add", "secret.bin", srcFile}); err != nil {
+		t.Fatalf("file-add: %v", err)
+	}
+
+	outFile := filepath.Join(dir, "out.bin")
+	if err := run([]string{"file-get", "secret.bin", outFile}); err != nil {
+		t.Fatalf("file-get: %v", err)
+	}
+
+	got, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Errorf("file content = %q, want %q", got, content)
+	}
+}
+
+func TestCmdFileGetDefaultOutputPath(t *testing.T) {
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, nil)
+
+	srcFile := filepath.Join(dir, "input.txt")
+	content := []byte("default path content")
+	if err := os.WriteFile(srcFile, content, 0600); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	if err := run([]string{"file-add", "output.txt", srcFile}); err != nil {
+		t.Fatalf("file-add: %v", err)
+	}
+
+	// Change the working directory to dir so the default output path lands there.
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	// No output path supplied – should write to "output.txt" in CWD.
+	if err := run([]string{"file-get", "output.txt"}); err != nil {
+		t.Fatalf("file-get (default path): %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "output.txt"))
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Errorf("file content = %q, want %q", got, content)
+	}
+}
+
+func TestCmdFileAddFailsIfExists(t *testing.T) {
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, nil)
+
+	srcFile := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(srcFile, []byte("data"), 0600); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	if err := run([]string{"file-add", "f.txt", srcFile}); err != nil {
+		t.Fatalf("first file-add: %v", err)
+	}
+	if err := run([]string{"file-add", "f.txt", srcFile}); err == nil {
+		t.Fatal("expected error on duplicate file-add, got nil")
+	}
+}
+
+func TestCmdFileSetOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, nil)
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	for _, content := range []string{"first", "second"} {
+		src := filepath.Join(dir, "src.txt")
+		if err := os.WriteFile(src, []byte(content), 0600); err != nil {
+			t.Fatalf("write src: %v", err)
+		}
+		if err := run([]string{"file-set", "f.txt", src}); err != nil {
+			t.Fatalf("file-set (%s): %v", content, err)
+		}
+	}
+
+	out := filepath.Join(dir, "out.txt")
+	if err := run([]string{"file-get", "f.txt", out}); err != nil {
+		t.Fatalf("file-get: %v", err)
+	}
+	got, _ := os.ReadFile(out)
+	if string(got) != "second" {
+		t.Errorf("file-get after file-set = %q, want %q", got, "second")
+	}
+}
+
+func TestCmdFileGetMissing(t *testing.T) {
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, nil)
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	if err := run([]string{"file-get", "nonexistent.txt", filepath.Join(dir, "out.txt")}); err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+}
+
+func TestCmdFileList(t *testing.T) {
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, nil)
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	for _, name := range []string{"b.txt", "a.txt", "c.txt"} {
+		src := filepath.Join(dir, name)
+		if err := os.WriteFile(src, []byte("x"), 0600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		if err := run([]string{"file-add", name, src}); err != nil {
+			t.Fatalf("file-add %s: %v", name, err)
+		}
+	}
+
+	// file-list prints to stdout — exercise it via the vault API to verify
+	// sorted order (the CLI output is printed directly).
+	v, err := vault.Load(vaultFile, []byte(editTestPassword))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	names := v.FileNames()
+	want := []string{"a.txt", "b.txt", "c.txt"}
+	if len(names) != len(want) {
+		t.Fatalf("FileNames = %v, want %v", names, want)
+	}
+	for i, n := range names {
+		if n != want[i] {
+			t.Errorf("FileNames[%d] = %q, want %q", i, n, want[i])
+		}
+	}
+}
+
+func TestCmdFileRemove(t *testing.T) {
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, nil)
+
+	src := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(src, []byte("data"), 0600); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	if err := run([]string{"file-add", "f.txt", src}); err != nil {
+		t.Fatalf("file-add: %v", err)
+	}
+	if err := run([]string{"file-remove", "f.txt"}); err != nil {
+		t.Fatalf("file-remove: %v", err)
+	}
+	if err := run([]string{"file-get", "f.txt", filepath.Join(dir, "out.txt")}); err == nil {
+		t.Fatal("expected error after file-remove, got nil")
+	}
+}
+
+func TestCmdFileRemoveMissing(t *testing.T) {
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, nil)
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	if err := run([]string{"file-remove", "nonexistent.txt"}); err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+}
+
+func TestCmdFileAddMissingUsage(t *testing.T) {
+	if err := run([]string{"file-add", "onlyname"}); err == nil {
+		t.Fatal("expected usage error, got nil")
+	}
+	if err := run([]string{"file-set"}); err == nil {
+		t.Fatal("expected usage error, got nil")
+	}
+	if err := run([]string{"file-get"}); err == nil {
+		t.Fatal("expected usage error, got nil")
+	}
+	if err := run([]string{"file-remove"}); err == nil {
+		t.Fatal("expected usage error, got nil")
+	}
+}
+
+func TestCmdFileRmAlias(t *testing.T) {
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, nil)
+
+	src := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(src, []byte("data"), 0600); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	if err := run([]string{"file-add", "f.txt", src}); err != nil {
+		t.Fatalf("file-add: %v", err)
+	}
+	// file-rm is an alias for file-remove.
+	if err := run([]string{"file-rm", "f.txt"}); err != nil {
+		t.Fatalf("file-rm: %v", err)
+	}
+}
+
+func TestCmdFileSecretsUnaffected(t *testing.T) {
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, map[string]string{"TOKEN": "abc123"})
+
+	src := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(src, []byte("file data"), 0600); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	if err := run([]string{"file-add", "f.txt", src}); err != nil {
+		t.Fatalf("file-add: %v", err)
+	}
+
+	v, err := vault.Load(vaultFile, []byte(editTestPassword))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if val, ok := v.Get("TOKEN"); !ok || val != "abc123" {
+		t.Errorf("secret TOKEN = %q, %v after file-add; want abc123, true", val, ok)
+	}
+}
 // process causes osExitFn to be called with the matching code.
 func TestCmdExecExitCodePropagation(t *testing.T) {
 	if runtime.GOOS == "windows" {

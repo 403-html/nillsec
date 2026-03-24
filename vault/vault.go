@@ -33,6 +33,9 @@ const (
 type payload struct {
 	Version int               `json:"version"`
 	Secrets map[string]string `json:"secrets"`
+	// Files holds encrypted binary file content keyed by a user-chosen name.
+	// The field is omitted from older vaults (backward-compatible).
+	Files map[string][]byte `json:"files,omitempty"`
 }
 
 // Vault provides high-level access to the decrypted secrets.
@@ -72,6 +75,47 @@ func (v *Vault) Keys() []string {
 	// Deterministic order.
 	sort.Strings(keys)
 	return keys
+}
+
+// GetFile returns the raw byte content for the named file and whether it
+// existed.
+func (v *Vault) GetFile(name string) ([]byte, bool) {
+	if v.data.Files == nil {
+		return nil, false
+	}
+	data, ok := v.data.Files[name]
+	return data, ok
+}
+
+// SetFile stores the binary content under name, creating a copy of data so
+// the caller may safely wipe the original slice afterwards.
+func (v *Vault) SetFile(name string, data []byte) {
+	if v.data.Files == nil {
+		v.data.Files = make(map[string][]byte)
+	}
+	dst := make([]byte, len(data))
+	copy(dst, data)
+	v.data.Files[name] = dst
+}
+
+// DeleteFile removes the named file from the vault; returns true if it
+// existed.
+func (v *Vault) DeleteFile(name string) bool {
+	if _, ok := v.data.Files[name]; !ok {
+		return false
+	}
+	delete(v.data.Files, name)
+	return true
+}
+
+// FileNames returns a sorted list of stored file names.
+func (v *Vault) FileNames() []string {
+	names := make([]string, 0, len(v.data.Files))
+	for n := range v.data.Files {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // MarshalText serialises the decrypted payload as indented JSON, suitable
