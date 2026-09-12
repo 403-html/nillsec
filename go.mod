@@ -1,12 +1,12 @@
 module github.com/403-html/nillsec
 
-go 1.23.0
+go 1.26.0
 
-toolchain go1.24.13
+toolchain go1.27.1
 
 require (
-	golang.org/x/crypto v0.36.0
-	golang.org/x/term v0.30.0
+	golang.org/x/crypto v0.57.0
+	golang.org/x/term v0.46.0
 )
 
-require golang.org/x/sys v0.31.0 // indirect
+require golang.org/x/sys v0.48.0 // indirect

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/403-html/nillsec/vault"
 )
+
 const editTestPassword = "edit-test-password"
 
 // makeTestVault initialises a vault at path and optionally seeds it with secrets.
@@ -74,6 +76,7 @@ func TestCmdEditRoundTrip(t *testing.T) {
 
 	t.Setenv("NILLSEC_VAULT", vaultFile)
 	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", editor)
 
 	if err := cmdEdit(nil); err != nil {
@@ -113,6 +116,7 @@ func TestCmdEditCleansUpEditorFile(t *testing.T) {
 
 	t.Setenv("NILLSEC_VAULT", vaultFile)
 	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", editor)
 
 	if err := cmdEdit(nil); err != nil {
@@ -151,6 +155,7 @@ func TestCmdEditCleansUpEditorFileOnEditorError(t *testing.T) {
 
 	t.Setenv("NILLSEC_VAULT", vaultFile)
 	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", script)
 
 	if err := cmdEdit(nil); err == nil {
@@ -165,6 +170,95 @@ func TestCmdEditCleansUpEditorFileOnEditorError(t *testing.T) {
 
 	if _, err := os.Stat(editorPath); !os.IsNotExist(err) {
 		t.Errorf("editor file %q still exists after cmdEdit returned error; expected it to be removed", editorPath)
+	}
+}
+
+func TestWipeFileDoesNotFollowSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "important.txt")
+	content := []byte("must remain intact")
+	if err := os.WriteFile(target, content, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	link := filepath.Join(dir, "editor.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	wipeFile(link)
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("wipeFile followed symlink and changed target: %q", got)
+	}
+}
+
+func TestEditorFileReadRejectsSymlinkWithoutTouchingTarget(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "important.json")
+	content := []byte(`{"version":1,"secrets":{"important":"untouched"}}`)
+	if err := os.WriteFile(target, content, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	ef, err := newEditorFile([]byte(`{"version":1,"secrets":{}}`))
+	if err != nil {
+		t.Fatalf("newEditorFile: %v", err)
+	}
+	path := ef.path()
+	t.Cleanup(ef.discard)
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("Remove editor file: %v", err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if _, err := ef.readAndClose(); err == nil {
+		t.Fatal("readAndClose accepted symlink")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile target: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("editor cleanup changed symlink target: %q", got)
+	}
+}
+
+func TestEditorFileReadDoesNotWipeReplacementHardLink(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "important.json")
+	content := []byte(`{"version":1,"secrets":{"important":"untouched"}}`)
+	if err := os.WriteFile(target, content, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	ef, err := newEditorFile([]byte(`{"version":1,"secrets":{}}`))
+	if err != nil {
+		t.Fatalf("newEditorFile: %v", err)
+	}
+	path := ef.path()
+	t.Cleanup(ef.discard)
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("Remove editor file: %v", err)
+	}
+	if err := os.Link(target, path); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+
+	gotEditor, err := ef.readAndClose()
+	if err != nil {
+		t.Fatalf("readAndClose: %v", err)
+	}
+	if string(gotEditor) != string(content) {
+		t.Fatalf("editor content = %q; want replacement content", gotEditor)
+	}
+	wipeBytes(gotEditor)
+	gotTarget, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile target: %v", err)
+	}
+	if string(gotTarget) != string(content) {
+		t.Fatalf("editor cleanup wiped hard-link target: %q", gotTarget)
 	}
 }
 
@@ -194,6 +288,7 @@ func TestCmdEditUsesDevShm(t *testing.T) {
 
 	t.Setenv("NILLSEC_VAULT", vaultFile)
 	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", editor)
 
 	if err := cmdEdit(nil); err != nil {
@@ -301,6 +396,165 @@ func TestBuildChildEnvNoNormalization(t *testing.T) {
 	}
 }
 
+func TestBuildChildEnvStripsMasterPassword(t *testing.T) {
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, map[string]string{"api_key": "secret"})
+	v, err := vault.Load(vaultFile, []byte(editTestPassword))
+	if err != nil {
+		t.Fatalf("vault.Load: %v", err)
+	}
+
+	env := buildChildEnv([]string{
+		"PATH=/usr/bin",
+		"NILLSEC_PASSWORD=master-password",
+	}, v, false)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "NILLSEC_PASSWORD=") {
+			t.Fatalf("child environment leaked master password: %q", entry)
+		}
+	}
+}
+
+func TestStripSensitiveEnvHonorsWindowsCaseInsensitivity(t *testing.T) {
+	env := stripSensitiveEnv([]string{
+		"Path=C:\\Windows",
+		"nillsec_password=master-password",
+		"SAFE=value",
+	}, true)
+	got := strings.Join(env, "\n")
+	if strings.Contains(strings.ToUpper(got), "NILLSEC_PASSWORD=") {
+		t.Fatalf("sanitized environment leaked master password: %q", got)
+	}
+	if !strings.Contains(got, "SAFE=value") {
+		t.Fatalf("sanitized environment dropped safe value: %q", got)
+	}
+}
+
+func TestValidateEnvironmentRejectsAmbiguousOrInvalidEntries(t *testing.T) {
+	tests := []struct {
+		name    string
+		secrets map[string]string
+		want    string
+	}{
+		{"case collision", map[string]string{"token": "one", "TOKEN": "two"}, "both export as"},
+		{"invalid key", map[string]string{"not-valid": "value"}, "invalid vault key"},
+		{"reserved key", map[string]string{"nillsec_password": "value"}, "reserved"},
+		{"nul value", map[string]string{"valid": "before\x00after"}, "NUL byte"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "test.vault")
+			makeTestVault(t, path, tt.secrets)
+			v, err := vault.Load(path, []byte(editTestPassword))
+			if err != nil {
+				t.Fatalf("vault.Load: %v", err)
+			}
+			err = validateEnvironment(v)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validateEnvironment() error = %v; want text %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestCmdAddReadsSecretFromStdin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.vault")
+	makeTestVault(t, path, nil)
+	t.Setenv("NILLSEC_VAULT", path)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	originalReader := stdinReader
+	t.Cleanup(func() { stdinReader = originalReader })
+	stdinReader = bufio.NewReader(strings.NewReader("secret from stdin\n"))
+
+	if err := cmdAdd([]string{"api_key"}, false); err != nil {
+		t.Fatalf("cmdAdd: %v", err)
+	}
+	v, err := vault.Load(path, []byte(editTestPassword))
+	if err != nil {
+		t.Fatalf("vault.Load: %v", err)
+	}
+	if got, ok := v.Get("api_key"); !ok || got != "secret from stdin" {
+		t.Fatalf("api_key = %q, %v; want stdin value", got, ok)
+	}
+}
+
+func TestEnvShellFormatting(t *testing.T) {
+	tests := []struct {
+		shell, key, value, want string
+	}{
+		{"sh", "API_KEY", "it's safe", "export API_KEY='it'\\''s safe'"},
+		{"powershell", "API_KEY", "it's safe", "$env:API_KEY = 'it''s safe'"},
+	}
+	for _, tt := range tests {
+		if got := formatEnvAssignment(tt.shell, tt.key, tt.value); got != tt.want {
+			t.Errorf("formatEnvAssignment(%q) = %q; want %q", tt.shell, got, tt.want)
+		}
+	}
+
+	for _, args := range [][]string{{"--shell", "sh"}, {"--shell=pwsh"}} {
+		if _, err := parseEnvShell(args); err != nil {
+			t.Errorf("parseEnvShell(%q): %v", args, err)
+		}
+	}
+	if _, err := parseEnvShell([]string{"--shell", "fish"}); err == nil {
+		t.Fatal("parseEnvShell accepted unsupported shell")
+	}
+}
+
+func TestParseEditorCommand(t *testing.T) {
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{"code --wait", []string{"code", "--wait"}},
+		{`"C:\Program Files\Editor\editor.exe" --reuse-window`, []string{`C:\Program Files\Editor\editor.exe`, "--reuse-window"}},
+		{`editor --name 'two words'`, []string{"editor", "--name", "two words"}},
+	}
+	for _, tt := range tests {
+		got, err := parseEditorCommand(tt.input)
+		if err != nil {
+			t.Fatalf("parseEditorCommand(%q): %v", tt.input, err)
+		}
+		if strings.Join(got, "\x00") != strings.Join(tt.want, "\x00") {
+			t.Errorf("parseEditorCommand(%q) = %q; want %q", tt.input, got, tt.want)
+		}
+	}
+	if _, err := parseEditorCommand(`editor "unterminated`); err == nil {
+		t.Fatal("parseEditorCommand accepted unclosed quote")
+	}
+}
+
+func TestCommandArityErrorsBeforeSideEffects(t *testing.T) {
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{"init", func() error { return cmdInit([]string{"one", "two"}) }},
+		{"add", func() error { return cmdAdd(nil, false) }},
+		{"get", func() error { return cmdGet([]string{"one", "two"}) }},
+		{"list", func() error { return cmdList([]string{"extra"}) }},
+		{"remove", func() error { return cmdRemove([]string{"one", "two"}) }},
+		{"edit", func() error { return cmdEdit([]string{"extra"}) }},
+		{"upgrade", func() error { return run([]string{"upgrade", "extra"}) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); err == nil || !strings.Contains(err.Error(), "usage:") {
+				t.Fatalf("error = %v; want usage error", err)
+			}
+		})
+	}
+}
+
+func TestPromptPasswordConfirmRejectsShortPassword(t *testing.T) {
+	t.Setenv("NILLSEC_PASSWORD", "too-short")
+	if _, err := promptPasswordConfirm(); err == nil || !strings.Contains(err.Error(), "at least 12") {
+		t.Fatalf("error = %v; want minimum-length error", err)
+	}
+}
+
 // TestLookPathInEnvUsesChildPath verifies that lookPathInEnv finds an
 // executable in a directory listed in the child env's PATH rather than in
 // the current process PATH.
@@ -322,6 +576,24 @@ func TestLookPathInEnvUsesChildPath(t *testing.T) {
 	}
 	if got != exe {
 		t.Errorf("resolved path = %q; want %q", got, exe)
+	}
+}
+
+func TestLookPathInEnvUsesPATHEXTOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only PATHEXT behavior")
+	}
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "myfakeexe.CMD")
+	if err := os.WriteFile(exe, []byte("@exit /b 0\r\n"), 0o600); err != nil {
+		t.Fatalf("write executable: %v", err)
+	}
+	got, err := lookPathInEnv("myfakeexe", []string{"PATH=" + dir, "PATHEXT=.CMD;.EXE"})
+	if err != nil {
+		t.Fatalf("lookPathInEnv: %v", err)
+	}
+	if !strings.EqualFold(got, exe) {
+		t.Fatalf("resolved path = %q; want %q", got, exe)
 	}
 }
 
@@ -410,6 +682,42 @@ func TestCmdExecUsesVaultPath(t *testing.T) {
 	}
 	if got := strings.TrimRight(string(raw), "\n\r"); got != "ran" {
 		t.Errorf("output = %q; want %q", got, "ran")
+	}
+}
+
+func TestCmdExecUsesPATHEXTAndHidesMasterPasswordOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only command execution behavior")
+	}
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.Mkdir(binDir, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	outFile := filepath.Join(dir, "out.txt")
+	script := filepath.Join(binDir, "check-env.CMD")
+	content := "@if defined NILLSEC_PASSWORD exit /b 9\r\n@echo %MY_SECRET%>\"" + outFile + "\"\r\n"
+	if err := os.WriteFile(script, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	vaultFile := filepath.Join(dir, "test.vault")
+	makeTestVault(t, vaultFile, map[string]string{
+		"path":      binDir,
+		"pathext":   ".CMD",
+		"my_secret": "available",
+	})
+	t.Setenv("NILLSEC_VAULT", vaultFile)
+	t.Setenv("NILLSEC_PASSWORD", editTestPassword)
+
+	if err := cmdExec([]string{"check-env"}); err != nil {
+		t.Fatalf("cmdExec: %v", err)
+	}
+	got, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != "available" {
+		t.Fatalf("output = %q; want injected secret", got)
 	}
 }
 

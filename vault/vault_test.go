@@ -49,6 +49,22 @@ func TestInitFailsIfVaultAlreadyExists(t *testing.T) {
 	}
 }
 
+func TestInitRefusesDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.vault")
+	target := filepath.Join(dir, "target-does-not-exist")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if err := vault.Init(path, testPW()); err == nil {
+		t.Fatal("Init followed a dangling symlink")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("symlink target was unexpectedly created: %v", err)
+	}
+}
+
 func TestLoadEmptyVault(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secrets.vault")
 	if err := vault.Init(path, testPW()); err != nil {
@@ -174,6 +190,84 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.vault")
+	if err := vault.Init(target, testPW()); err != nil {
+		t.Fatalf("Init target: %v", err)
+	}
+	link := filepath.Join(dir, "link.vault")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	v, err := vault.Load(target, testPW())
+	if err != nil {
+		t.Fatalf("Load target: %v", err)
+	}
+	v.Set("key", "new value")
+	if err := vault.Save(link, testPW(), v); err == nil {
+		t.Fatal("Save accepted symlink destination")
+	}
+
+	unchanged, err := vault.Load(target, testPW())
+	if err != nil {
+		t.Fatalf("Load unchanged target: %v", err)
+	}
+	if _, exists := unchanged.Get("key"); exists {
+		t.Fatal("Save through symlink modified the target vault")
+	}
+}
+
+func TestSaveRepairsPrivatePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not applicable on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "secrets.vault")
+	if err := vault.Init(path, testPW()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := os.Chmod(path, 0o666); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	v, err := vault.Load(path, testPW())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := vault.Save(path, testPW(), v); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %o; want 600", info.Mode().Perm())
+	}
+}
+
+func TestSaveLeavesOnlyCompleteVaultFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.vault")
+	if err := vault.Init(path, testPW()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	v, err := vault.Load(path, testPW())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	v.Set("key", "value")
+	if err := vault.Save(path, testPW(), v); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "secrets.vault" {
+		t.Fatalf("unexpected files left after atomic save: %v", entries)
+	}
+}
+
 func TestEachSaveUsesNewNonce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secrets.vault")
 	if err := vault.Init(path, testPW()); err != nil {
@@ -223,6 +317,21 @@ func TestMarshalUnmarshalText(t *testing.T) {
 	}
 }
 
+func TestUnmarshalTextRejectsUnknownTrailingOrUnsupportedContent(t *testing.T) {
+	v := newVault(t)
+	tests := []string{
+		`{"version":1,"secrets":{},"typo":true}`,
+		`{"version":1,"secrets":{}} {"version":1,"secrets":{}}`,
+		`{"version":2,"secrets":{}}`,
+		`{"version":1,"secrets":null}`,
+	}
+	for _, input := range tests {
+		if err := v.UnmarshalText([]byte(input)); err == nil {
+			t.Errorf("UnmarshalText accepted invalid content: %s", input)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Vault file robustness
 // ---------------------------------------------------------------------------
@@ -266,7 +375,7 @@ func TestLoadRejectsTruncatedSalt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	invalidB64 := "c2hvcnQ=" // base64("short") — 5 bytes, not 16
+	invalidB64 := "c2hvcnQ=" // base64("short"); 5 bytes, not 16
 	lines := strings.Split(string(raw), "\n")
 	for i, line := range lines {
 		if strings.HasPrefix(line, "salt: ") {
@@ -294,7 +403,7 @@ func TestLoadRejectsTruncatedNonce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	invalidB64 := "c2hvcnQ=" // base64("short") — 5 bytes, not 12
+	invalidB64 := "c2hvcnQ=" // base64("short"); 5 bytes, not 12
 	lines := strings.Split(string(raw), "\n")
 	for i, line := range lines {
 		if strings.HasPrefix(line, "nonce: ") {

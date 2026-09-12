@@ -2,12 +2,18 @@ package main
 
 import (
 	"archive/tar"
+	"bufio"
 	"compress/gzip"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,7 +27,7 @@ import (
 var upgradeAPIURL = "https://api.github.com/repos/403-html/nillsec/releases/latest"
 
 // upgradeHTTPClient is used for all upgrade HTTP requests.
-var upgradeHTTPClient = &http.Client{Timeout: 30 * time.Second}
+var upgradeHTTPClient = &http.Client{Timeout: 2 * time.Minute}
 
 // executableFn returns the path to the running binary; overridable in tests.
 var executableFn = os.Executable
@@ -38,16 +44,109 @@ type githubRelease struct {
 // parseMajorVersion returns the major version number from a semver string
 // such as "v1.2.3" or "2.0.0".
 func parseMajorVersion(v string) (int, error) {
-	orig := v
-	v = strings.TrimPrefix(v, "v")
-	if dot := strings.IndexByte(v, '.'); dot >= 0 {
-		v = v[:dot]
-	}
-	n, err := strconv.Atoi(v)
+	parsed, err := parseSemanticVersion(v)
 	if err != nil {
-		return 0, fmt.Errorf("invalid version %q: %w", orig, err)
+		return 0, err
 	}
-	return n, nil
+	return parsed.major, nil
+}
+
+type semanticVersion struct {
+	major, minor, patch int
+	prerelease          string
+}
+
+func parseSemanticVersion(input string) (semanticVersion, error) {
+	original := input
+	input = strings.TrimPrefix(input, "v")
+	if plus := strings.IndexByte(input, '+'); plus >= 0 {
+		input = input[:plus]
+	}
+	prerelease := ""
+	if dash := strings.IndexByte(input, '-'); dash >= 0 {
+		prerelease = input[dash+1:]
+		input = input[:dash]
+		if prerelease == "" {
+			return semanticVersion{}, fmt.Errorf("invalid version %q", original)
+		}
+	}
+	parts := strings.Split(input, ".")
+	if len(parts) == 0 || len(parts) > 3 {
+		return semanticVersion{}, fmt.Errorf("invalid version %q", original)
+	}
+	numbers := [3]int{}
+	for i, part := range parts {
+		if part == "" {
+			return semanticVersion{}, fmt.Errorf("invalid version %q", original)
+		}
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 0 {
+			return semanticVersion{}, fmt.Errorf("invalid version %q", original)
+		}
+		numbers[i] = n
+	}
+	return semanticVersion{major: numbers[0], minor: numbers[1], patch: numbers[2], prerelease: prerelease}, nil
+}
+
+// compareSemanticVersions returns -1, 0, or 1 when a is older than, equal to,
+// or newer than b.
+func compareSemanticVersions(a, b string) (int, error) {
+	av, err := parseSemanticVersion(a)
+	if err != nil {
+		return 0, err
+	}
+	bv, err := parseSemanticVersion(b)
+	if err != nil {
+		return 0, err
+	}
+	for _, pair := range [][2]int{{av.major, bv.major}, {av.minor, bv.minor}, {av.patch, bv.patch}} {
+		if pair[0] < pair[1] {
+			return -1, nil
+		}
+		if pair[0] > pair[1] {
+			return 1, nil
+		}
+	}
+	return comparePrerelease(av.prerelease, bv.prerelease), nil
+}
+
+func comparePrerelease(a, b string) int {
+	if a == b {
+		return 0
+	}
+	if a == "" {
+		return 1
+	}
+	if b == "" {
+		return -1
+	}
+	aParts, bParts := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(aParts) && i < len(bParts); i++ {
+		if aParts[i] == bParts[i] {
+			continue
+		}
+		aNum, aErr := strconv.Atoi(aParts[i])
+		bNum, bErr := strconv.Atoi(bParts[i])
+		switch {
+		case aErr == nil && bErr == nil:
+			if aNum < bNum {
+				return -1
+			}
+			return 1
+		case aErr == nil:
+			return -1
+		case bErr == nil:
+			return 1
+		case aParts[i] < bParts[i]:
+			return -1
+		default:
+			return 1
+		}
+	}
+	if len(aParts) < len(bParts) {
+		return -1
+	}
+	return 1
 }
 
 // upgradeAssetName returns the expected GitHub release asset filename for the
@@ -80,8 +179,16 @@ func cmdUpgrade() error {
 	}
 
 	latest := rel.TagName
-	if strings.TrimPrefix(latest, "v") == strings.TrimPrefix(version, "v") {
+	comparison, err := compareSemanticVersions(version, latest)
+	if err != nil {
+		return fmt.Errorf("comparing current and latest versions: %w", err)
+	}
+	if comparison == 0 {
 		fmt.Printf("nillsec is already up to date (%s).\n", version)
+		return nil
+	}
+	if comparison > 0 {
+		fmt.Printf("nillsec %s is newer than the latest published release (%s); no update performed.\n", version, latest)
 		return nil
 	}
 
@@ -114,15 +221,24 @@ func cmdUpgrade() error {
 	}
 
 	assetName := upgradeAssetName()
-	var downloadURL string
+	var downloadURL, checksumURL string
 	for _, asset := range rel.Assets {
 		if asset.Name == assetName {
 			downloadURL = asset.BrowserDownloadURL
-			break
+		}
+		if asset.Name == "checksums.txt" {
+			checksumURL = asset.BrowserDownloadURL
 		}
 	}
 	if downloadURL == "" {
 		return fmt.Errorf("no release asset found for %s/%s (expected %q)", runtime.GOOS, runtime.GOARCH, assetName)
+	}
+	if checksumURL == "" {
+		return fmt.Errorf("release is missing checksums.txt; refusing an unverified update")
+	}
+	expectedChecksum, err := fetchExpectedChecksum(checksumURL, assetName)
+	if err != nil {
+		return fmt.Errorf("fetching release checksum: %w", err)
 	}
 
 	exePath, err := executableFn()
@@ -131,7 +247,7 @@ func cmdUpgrade() error {
 	}
 
 	fmt.Printf("Downloading %s...\n", assetName)
-	if err := downloadAndInstall(downloadURL, assetName, exePath); err != nil {
+	if err := downloadAndInstall(downloadURL, assetName, exePath, expectedChecksum); err != nil {
 		return fmt.Errorf("installing update: %w", err)
 	}
 
@@ -141,6 +257,9 @@ func cmdUpgrade() error {
 
 // fetchLatestRelease queries the GitHub Releases API for the latest release.
 func fetchLatestRelease() (*githubRelease, error) {
+	if err := validateUpgradeURL(upgradeAPIURL); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequest(http.MethodGet, upgradeAPIURL, nil)
 	if err != nil {
 		return nil, err
@@ -157,20 +276,124 @@ func fetchLatestRelease() (*githubRelease, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GitHub API returned %s", resp.Status)
 	}
+	if err := validateUpgradeURL(resp.Request.URL.String()); err != nil {
+		return nil, err
+	}
 
 	var rel githubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxReleaseMetadataBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading response: %w", err)
+	}
+	if len(data) > maxReleaseMetadataBytes {
+		return nil, fmt.Errorf("GitHub API response is larger than %d bytes", maxReleaseMetadataBytes)
+	}
+	if err := json.Unmarshal(data, &rel); err != nil {
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 	return &rel, nil
 }
 
-// maxDownloadBytes is the maximum binary size we'll accept (50 MiB).
-const maxDownloadBytes = 50 << 20
+const (
+	// maxDownloadBytes is the maximum release artifact or extracted binary size.
+	maxDownloadBytes        = 50 << 20
+	maxChecksumBytes        = 1 << 20
+	maxReleaseMetadataBytes = 1 << 20
+)
+
+// validateUpgradeURL prevents transport downgrades. Loopback HTTP is accepted
+// only to allow local integration tests without weakening real downloads.
+func validateUpgradeURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return fmt.Errorf("invalid upgrade URL %q", rawURL)
+	}
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	host := parsed.Hostname()
+	if parsed.Scheme == "http" && (strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback()) {
+		return nil
+	}
+	return fmt.Errorf("refusing insecure upgrade URL %q", rawURL)
+}
+
+// fetchExpectedChecksum downloads checksums.txt and returns the selected
+// artifact's validated SHA-256 digest.
+func fetchExpectedChecksum(url, assetName string) ([]byte, error) {
+	manifest, err := downloadBytes(url, maxChecksumBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []byte
+	scanner := bufio.NewScanner(strings.NewReader(string(manifest)))
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) != 2 || strings.TrimPrefix(fields[1], "*") != assetName {
+			continue
+		}
+		if result != nil {
+			return nil, fmt.Errorf("checksum file contains duplicate entries for %q", assetName)
+		}
+		digest, err := hex.DecodeString(fields[0])
+		if err != nil || len(digest) != sha256.Size {
+			return nil, fmt.Errorf("invalid SHA-256 checksum for %q", assetName)
+		}
+		result = digest
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading checksum file: %w", err)
+	}
+	if result == nil {
+		return nil, fmt.Errorf("checksum file has no entry for %q", assetName)
+	}
+	return result, nil
+}
+
+func downloadBytes(url string, limit int64) ([]byte, error) {
+	if err := validateUpgradeURL(url); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "nillsec/"+version)
+	resp, err := upgradeHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download failed: HTTP %s", resp.Status)
+	}
+	if err := validateUpgradeURL(resp.Request.URL.String()); err != nil {
+		return nil, err
+	}
+	if resp.ContentLength > limit {
+		return nil, fmt.Errorf("download is larger than %d bytes", limit)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("download is larger than %d bytes", limit)
+	}
+	return data, nil
+}
 
 // downloadAndInstall downloads the new binary from url, extracts it from a
 // tar.gz archive if necessary, and atomically replaces the binary at exePath.
-func downloadAndInstall(url, assetName, exePath string) error {
+func downloadAndInstall(url, assetName, exePath string, expectedChecksum []byte) error {
+	if len(expectedChecksum) != sha256.Size {
+		return errors.New("missing or invalid expected SHA-256 checksum")
+	}
+
+	if err := validateUpgradeURL(url); err != nil {
+		return err
+	}
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -186,26 +409,59 @@ func downloadAndInstall(url, assetName, exePath string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download failed: HTTP %s", resp.Status)
 	}
+	if err := validateUpgradeURL(resp.Request.URL.String()); err != nil {
+		return err
+	}
+	if resp.ContentLength > maxDownloadBytes {
+		return fmt.Errorf("release artifact is larger than %d bytes", maxDownloadBytes)
+	}
 
-	// Write to a temp file in the system temp directory; the user is likely
-	// to have write access there even when the binary directory is owned by
-	// root (e.g. /usr/local/bin).
-	tmp, err := os.CreateTemp("", ".nillsec-upgrade-*")
+	// Download the complete release artifact first so the checksum covers the
+	// archive itself, exactly as listed by checksums.txt.
+	asset, err := os.CreateTemp("", ".nillsec-download-*")
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
+	}
+	assetNameOnDisk := asset.Name()
+	defer func() {
+		_ = asset.Close()
+		_ = os.Remove(assetNameOnDisk)
+	}()
+
+	hasher := sha256.New()
+	written, err := io.Copy(io.MultiWriter(asset, hasher), io.LimitReader(resp.Body, maxDownloadBytes+1)) //nolint:gosec
+	if err != nil {
+		return fmt.Errorf("downloading release artifact: %w", err)
+	}
+	if written > maxDownloadBytes {
+		return fmt.Errorf("release artifact is larger than %d bytes", maxDownloadBytes)
+	}
+	if subtle.ConstantTimeCompare(hasher.Sum(nil), expectedChecksum) != 1 {
+		return errors.New("release artifact checksum mismatch; refusing update")
+	}
+	if err := asset.Sync(); err != nil {
+		return fmt.Errorf("flushing downloaded artifact: %w", err)
+	}
+	if _, err := asset.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewinding downloaded artifact: %w", err)
+	}
+
+	// Extract or copy the verified executable into a separate private file.
+	tmp, err := os.CreateTemp("", ".nillsec-upgrade-*")
+	if err != nil {
+		return fmt.Errorf("creating executable temp file: %w", err)
 	}
 	tmpName := tmp.Name()
 	ok := false
 	defer func() {
-		tmp.Close()
+		_ = tmp.Close()
 		if !ok {
-			os.Remove(tmpName) //nolint:errcheck
+			_ = os.Remove(tmpName)
 		}
 	}()
 
-	body := io.LimitReader(resp.Body, maxDownloadBytes)
 	if strings.HasSuffix(assetName, ".tar.gz") {
-		gz, err := gzip.NewReader(body)
+		gz, err := gzip.NewReader(asset)
 		if err != nil {
 			return fmt.Errorf("reading gzip: %w", err)
 		}
@@ -223,7 +479,13 @@ func downloadAndInstall(url, assetName, exePath string) error {
 				return fmt.Errorf("reading tar: %w", err)
 			}
 			if hdr.Name == binaryName {
-				if _, err := io.Copy(tmp, io.LimitReader(tr, maxDownloadBytes)); err != nil { //nolint:gosec
+				if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+					return fmt.Errorf("binary %q is not a regular archive entry", binaryName)
+				}
+				if hdr.Size < 0 || hdr.Size > maxDownloadBytes {
+					return fmt.Errorf("binary %q is larger than %d bytes", binaryName, maxDownloadBytes)
+				}
+				if _, err := io.CopyN(tmp, tr, hdr.Size); err != nil { //nolint:gosec
 					return fmt.Errorf("writing binary: %w", err)
 				}
 				found = true
@@ -234,7 +496,7 @@ func downloadAndInstall(url, assetName, exePath string) error {
 			return fmt.Errorf("binary %q not found in archive", binaryName)
 		}
 	} else {
-		if _, err := io.Copy(tmp, body); err != nil { //nolint:gosec
+		if _, err := io.Copy(tmp, asset); err != nil { //nolint:gosec
 			return fmt.Errorf("writing binary: %w", err)
 		}
 	}

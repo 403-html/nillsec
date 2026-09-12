@@ -4,200 +4,125 @@
 [![Latest Release](https://img.shields.io/github/v/release/403-html/nillsec)](https://github.com/403-html/nillsec/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A simple command-line tool for managing encrypted project secrets stored in a single file.
+A small command-line tool for storing project secrets in an encrypted, version-control-friendly vault.
 
 ## Features
 
-- **AES-256-GCM** authenticated encryption
-- **Argon2id** key derivation (brute-force resistant)
-- Single encrypted vault file — safe to commit to version control
-- Secrets are decrypted only in memory; the `edit` command attempts to keep plaintext off disk (using `/dev/shm` on Linux when available — see below)
-- Export secrets as environment variables (`eval "$(nillsec env)"`)
-- Run processes with injected secrets (`nillsec exec -- <command>`)
+- AES-256-GCM authenticated encryption with Argon2id key derivation
+- Atomic vault writes with private permissions and link protection
+- Hidden secret input and command-scoped environment injection
+- POSIX shell and PowerShell exports
+- Checksum-verified self-updates
 
 ## Installation
 
-**Pre-built binary (macOS / Linux / Windows)**
+Download the archive for your platform from the [latest release](https://github.com/403-html/nillsec/releases/latest) and verify it against `checksums.txt` before extracting it.
 
-Download the archive for your platform from the [latest release](https://github.com/403-html/nillsec/releases/latest), then extract and install:
+Linux example:
 
 ```sh
-# macOS (Apple Silicon)
-curl -L https://github.com/403-html/nillsec/releases/latest/download/nillsec-darwin-arm64.tar.gz | tar -xz
-sudo mv nillsec-darwin-arm64 /usr/local/bin/nillsec
-
-# macOS (Intel)
-curl -L https://github.com/403-html/nillsec/releases/latest/download/nillsec-darwin-amd64.tar.gz | tar -xz
-sudo mv nillsec-darwin-amd64 /usr/local/bin/nillsec
-
-# Linux (x86-64)
-curl -L https://github.com/403-html/nillsec/releases/latest/download/nillsec-linux-amd64.tar.gz | tar -xz
-sudo mv nillsec-linux-amd64 /usr/local/bin/nillsec
+asset=nillsec-linux-amd64.tar.gz
+curl -LO "https://github.com/403-html/nillsec/releases/latest/download/$asset"
+curl -LO https://github.com/403-html/nillsec/releases/latest/download/checksums.txt
+grep "  $asset$" checksums.txt | sha256sum --check -
+tar -xzf "$asset"
+sudo install nillsec-linux-amd64 /usr/local/bin/nillsec
 ```
 
-> **macOS note:** always extract with `tar -xzf` (or pipe through `tar -xz` as above) rather than double-clicking the archive in Finder. Extracting in the terminal prevents macOS from applying the quarantine flag to the binary, which avoids the *"Apple could not verify…"* Gatekeeper prompt.
-
-**Via Go toolchain**
+Install from source with Go 1.26 or newer:
 
 ```sh
 go install github.com/403-html/nillsec@latest
 ```
 
-**Build from source**
-
-```sh
-go build -o nillsec .
-```
-
-## Vault file format
-
-```
-$VAULT;1
-kdf: argon2id
-salt: <base64>
-nonce: <base64>
-cipher: aes-256-gcm
-data: <base64>
-```
-
-## Usage
-
-### Create a new vault
+## Quick start
 
 ```sh
 nillsec init
-```
-
-### Add a secret
-
-```sh
-nillsec add database_password super-secret
-nillsec add api_token abcdef
-```
-
-### Update an existing secret
-
-```sh
-nillsec set database_password new-value
-```
-
-### Retrieve a secret
-
-```sh
-nillsec get database_password
-# → super-secret
-```
-
-### List all secret keys (values are not printed)
-
-```sh
-nillsec list
-# → api_token
-# → database_password
-```
-
-### Delete a secret
-
-```sh
-nillsec remove api_token
-```
-
-### Edit vault contents in `$EDITOR`
-
-```sh
-nillsec edit
-```
-
-> **Security note:** The `edit` command temporarily exposes vault plaintext so
-> that the editor can open it.
->
-> - **Linux** — the file is created in `/dev/shm`, a `tmpfs` mount backed
->   entirely by RAM.  The decrypted content never reaches a physical disk.
->   If `/dev/shm` is unavailable or unwritable, `nillsec` falls back to the OS
->   temp directory.
-> - **Other platforms** — a private temp file (`0600`) is used in the OS temp
->   directory.  Its contents are zero-wiped and the file is deleted as soon as
->   the editor exits.
->
-> On all platforms the editor file is wiped and removed once the editor exits.
-> If the file cannot be removed, `nillsec` aborts and does not save the vault,
-> so that plaintext is never silently left behind.
-
-### Run a command with secrets injected
-
-```sh
+nillsec add database_password
 nillsec exec -- npm run dev
 ```
 
-Secrets are injected as environment variables into the child process directly — no shell expansion occurs, so there is no risk of secret values being interpreted as shell code. Vault secrets take precedence over any identically-named variables already present in the environment.
+`init` creates `secrets.vault` and asks for a master password of at least 12 characters. Use a unique, randomly generated passphrase.
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `nillsec init [path]` | Create a vault |
+| `nillsec add <key> [value]` | Add a secret |
+| `nillsec set <key> [value]` | Add or replace a secret |
+| `nillsec get <key>` | Print a secret value |
+| `nillsec list` | List keys without values |
+| `nillsec remove <key>` | Delete a secret |
+| `nillsec edit` | Edit the decrypted vault |
+| `nillsec env [--shell sh\|powershell]` | Print environment assignments |
+| `nillsec exec [--] <command> ...` | Run a command with vault secrets |
+| `nillsec upgrade` | Install the latest release |
+| `nillsec version` | Print the installed version |
+
+Omit the value from `add` and `set` to enter it through a hidden prompt. Passing a value as an argument is supported for compatibility but can expose it through shell history or process listings.
+
+## Shell integration
+
+Prefer `exec` when a single process needs the secrets:
 
 ```sh
-nillsec exec -- python manage.py runserver
 nillsec exec -- docker compose up
-
-# Open a secure shell with all secrets available as env vars:
-nillsec exec -- $SHELL
 ```
 
-The `--` separator is optional but recommended to clearly distinguish nillsec flags from the command being run.
-
-### Export secrets as environment variables
-
-If you need to export secrets into your current shell session rather than running a subprocess, use:
+To export secrets into the current shell:
 
 ```sh
-eval "$(nillsec env)"
-# Sets DATABASE_PASSWORD and API_TOKEN in the current shell.
+eval "$(nillsec env --shell sh)"
 ```
 
-### Upgrade to the latest release
+```powershell
+Invoke-Expression (& nillsec env --shell powershell | Out-String)
+```
+
+Vault keys are converted to uppercase environment names. Invalid names, NUL values, case-insensitive collisions, and `NILLSEC_PASSWORD` are rejected. The master password is never passed to commands started by `exec`.
+
+## Editing
+
+`nillsec edit` uses `VISUAL`, then `EDITOR`, with `vi` as the Unix default and Notepad as the Windows default. Editor arguments and quoted executable paths are supported.
+
+On Linux, plaintext is placed in `/dev/shm` when available. Other systems use a private OS temporary file. Nillsec overwrites and removes that file after the editor exits, but filesystem journaling, swap, editor backups, or a crash may still retain plaintext.
+
+## Upgrading
 
 ```sh
 nillsec upgrade
 ```
 
-`nillsec upgrade` fetches the latest release from GitHub, replaces the running
-binary in-place, and exits.  If the latest release is a **major version bump**
-(e.g. v1 → v2), you will be warned that breaking changes may be present and
-asked to confirm before the download begins.  If you are already on the latest
-version, the command simply tells you so and exits without making any changes.
+The updater verifies the selected artifact against the release's `checksums.txt`, rejects malformed or oversized downloads, and installs only a newer semantic version. Major upgrades require confirmation.
 
-## Comparison with similar tools
+## Comparison
 
-| Tool / approach | Encrypted at rest | Git-friendly | Export to env vars | Needs external service | Best fit |
-|---|:---:|:---:|:---:|:---:|---|
-| **nillsec** | ✅ | ✅ | ✅ | No | Local dev & small teams — encrypted secrets in Git with quick env export; separate master password to manage |
-| Plain `.env` | ❌ | ⚠️ | ✅ | No | Prototypes and non-sensitive config; easy to leak |
-| direnv / dotenv | ❌ | ⚠️ | ✅ | No | Convenient env auto-loading; still plaintext |
-| dotenvx | ✅ | ✅ | ✅ | No | `.env`-style workflow with added encryption; separate key to manage |
-| Ansible Vault / SOPS / git-crypt | ✅ | ✅ | ⚠️ | No | Encrypting files or whole repos; not optimised for env export |
-| OS keychain (envchain, Keychain) | ✅ | ❌ | ✅ | No | Workstation secrets in OS keystore; not portable across machines |
-| Doppler / Infisical / 1Password CLI | ✅ | ❌ | ✅ | **Yes** | Centralised secret lifecycle with sharing, audit, and rotation |
-| CI/CD secrets (GitHub Actions, etc.) | ✅ | ❌ | ✅ | **Yes** | Build and deploy pipelines; not local dev friendly |
-| Vault / Kubernetes Secrets | ✅ | ⚠️ | ❌ | **Yes** | Enterprise platform-level secret management; high complexity |
+| Approach | Repository content | Access model | Best fit | Main tradeoff |
+|---|---|---|---|---|
+| **nillsec** | One encrypted vault | Shared master password | Local development and small teams that need fast environment injection | Password distribution and rotation are manual |
+| Plain `.env` | Plaintext configuration | File access | Local, non-sensitive configuration | No encryption at rest |
+| [dotenvx](https://dotenvx.com/) | Encrypted `.env` files | Separate private key | Teams keeping the dotenv workflow | Requires a separate key lifecycle |
+| [SOPS](https://github.com/getsops/sops) | Structured encrypted files | age, PGP, or cloud KMS | Infrastructure configuration and multi-key teams | More setup and key-provider concepts |
+| [git-crypt](https://github.com/AGWA/git-crypt) | Selected files encrypted through Git filters | GPG users or a shared key | Transparent encryption of repository files | Git-specific setup; not focused on environment injection |
+| Managed secrets service | Centrally stored secrets | Accounts, policies, and machine identities | Teams needing audit logs, access control, and rotation | External service and operational dependency |
 
-## Environment variables
+Nillsec is intentionally narrow. Use it when encrypted secrets should travel with a repository and be injected locally without an external service. Prefer a managed service when centralized revocation, auditing, or automated rotation is required.
 
-| Variable           | Description                                  | Default         |
-|--------------------|----------------------------------------------|-----------------|
-| `NILLSEC_VAULT`    | Path to the vault file                       | `secrets.vault` |
-| `NILLSEC_PASSWORD` | Master password (for scripting / CI use)     | —               |
-| `EDITOR`           | Editor used by the `edit` command            | `vi`            |
+## Configuration
 
-## Typical workflow
+| Variable | Description | Default |
+|---|---|---|
+| `NILLSEC_VAULT` | Vault path | `secrets.vault` |
+| `NILLSEC_PASSWORD` | Master password for automation | None |
+| `VISUAL` | Preferred editor | None |
+| `EDITOR` | Fallback editor | `vi` or Notepad |
 
-```sh
-nillsec init
-nillsec add database_password secret
-nillsec add api_token token123
+## Security
 
-# Run a command directly with secrets injected:
-nillsec exec -- npm run dev
-
-# Or open a shell with all secrets available:
-nillsec exec -- $SHELL
-
-# If you need the secrets exported into your current shell session:
-eval "$(nillsec env)"
-echo "$DATABASE_PASSWORD"
-```
+- Anyone with a copy of the vault can attempt password guesses offline. Encryption cannot make a weak password safe.
+- Vault files are replaced atomically. Symlinks and other non-regular paths are rejected.
+- Environment variables may be visible to the child process, its descendants, debuggers, and other processes running under the same account.
+- Use `NILLSEC_PASSWORD` only through protected automation secrets and unset it when no longer needed.
+- Release checksums detect corruption or substitution only while GitHub release metadata remains trustworthy. They are not an independent signature.

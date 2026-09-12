@@ -25,7 +25,10 @@ jobs:
           cache: true
 
       - name: Run tests
-        run: go test ./... -v -count=1
+        run: go test -race ./... -v -count=1
+
+      - name: Run static analysis
+        run: go vet ./...
 
   # -----------------------------------------------------------------------
   # Cross-compile for every target platform and collect the binaries.
@@ -132,10 +135,12 @@ jobs:
         run: |
           sha256sum nillsec-* | tee checksums.txt
 
-      - name: Upload assets to release
+      - name: Create release and upload assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ github.ref_name }}" \
+          gh release create "${{ github.ref_name }}" \
             dist/nillsec-* dist/checksums.txt \
-            --clobber
+            --verify-tag \
+            --generate-notes \
+            --title "${{ github.ref_name }}"
