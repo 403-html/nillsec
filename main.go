@@ -1,10 +1,10 @@
-// nillsec – encrypted project-secret vault.
+// nillsec: encrypted project-secret vault.
 //
 // Usage:
 //
 //	nillsec init                          create a new vault
-//	nillsec add  <key> <value>            add a secret (fails if key exists)
-//	nillsec set  <key> <value>            add or overwrite a secret
+//	nillsec add  <key> [value]            add a secret (fails if key exists)
+//	nillsec set  <key> [value]            add or overwrite a secret
 //	nillsec get  <key>                    print a secret value
 //	nillsec list                          list secret keys
 //	nillsec remove <key>                  delete a secret
@@ -29,6 +29,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 
 	"github.com/403-html/nillsec/vault"
 	"golang.org/x/term"
@@ -78,8 +79,14 @@ func run(args []string) error {
 	case "exec":
 		return cmdExec(rest)
 	case "upgrade":
+		if len(rest) != 0 {
+			return fmt.Errorf("usage: nillsec upgrade")
+		}
 		return cmdUpgrade()
 	case "version", "--version", "-v":
+		if len(rest) != 0 {
+			return fmt.Errorf("usage: nillsec version")
+		}
 		fmt.Println("nillsec", version)
 		return nil
 	case "help", "-h", "--help":
@@ -96,6 +103,9 @@ func run(args []string) error {
 // ---------------------------------------------------------------------------
 
 func cmdInit(args []string) error {
+	if len(args) > 1 {
+		return fmt.Errorf("usage: nillsec init [path]")
+	}
 	path := vaultPath(args)
 	pw, err := promptPasswordConfirm()
 	if err != nil {
@@ -112,13 +122,22 @@ func cmdInit(args []string) error {
 
 // cmdAdd handles both "add" (overwrite=false) and "set" (overwrite=true).
 func cmdAdd(args []string, overwrite bool) error {
-	if len(args) < 2 {
-		return fmt.Errorf("usage: nillsec %s <key> <value>", map[bool]string{true: "set", false: "add"}[overwrite])
+	command := map[bool]string{true: "set", false: "add"}[overwrite]
+	if len(args) < 1 || len(args) > 2 {
+		return fmt.Errorf("usage: nillsec %s <key> [value]", command)
 	}
-	key, value := args[0], args[1]
+	key := args[0]
+	value := ""
+	if len(args) == 2 {
+		value = args[1]
+		fmt.Fprintln(os.Stderr, "warning: a secret passed as an argument may be visible in shell history and process listings; omit [value] to enter it securely")
+	}
 
 	if !validKeyRe.MatchString(key) {
 		return fmt.Errorf("invalid key %q: must be a valid POSIX identifier ([A-Za-z_][A-Za-z0-9_]*)", key)
+	}
+	if strings.EqualFold(key, "NILLSEC_PASSWORD") {
+		return fmt.Errorf("key %q is reserved for nillsec authentication", key)
 	}
 
 	path := vaultPath(nil)
@@ -139,12 +158,22 @@ func cmdAdd(args []string, overwrite bool) error {
 		}
 	}
 
+	if len(args) == 1 {
+		value, err = promptSecret("Secret value: ")
+		if err != nil {
+			return err
+		}
+	}
+
 	v.Set(key, value)
+	if err := validateEnvironment(v); err != nil {
+		return err
+	}
 	return vault.Save(path, pw, v)
 }
 
 func cmdGet(args []string) error {
-	if len(args) < 1 {
+	if len(args) != 1 {
 		return fmt.Errorf("usage: nillsec get <key>")
 	}
 	key := args[0]
@@ -169,7 +198,10 @@ func cmdGet(args []string) error {
 	return nil
 }
 
-func cmdList(_ []string) error {
+func cmdList(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: nillsec list")
+	}
 	path := vaultPath(nil)
 	pw, err := promptPassword("Master password: ")
 	if err != nil {
@@ -189,7 +221,7 @@ func cmdList(_ []string) error {
 }
 
 func cmdRemove(args []string) error {
-	if len(args) < 1 {
+	if len(args) != 1 {
 		return fmt.Errorf("usage: nillsec remove <key>")
 	}
 	key := args[0]
@@ -212,7 +244,10 @@ func cmdRemove(args []string) error {
 	return vault.Save(path, pw, v)
 }
 
-func cmdEdit(_ []string) error {
+func cmdEdit(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: nillsec edit")
+	}
 	path := vaultPath(nil)
 	pw, err := promptPassword("Master password: ")
 	if err != nil {
@@ -238,15 +273,30 @@ func cmdEdit(_ []string) error {
 	defer ef.discard()
 
 	// Open in editor.
-	editor := os.Getenv("EDITOR")
+	editor := os.Getenv("VISUAL")
 	if editor == "" {
-		editor = "vi"
+		editor = os.Getenv("EDITOR")
 	}
-	editorCmd := exec.Command(editor, ef.path()) //nolint:gosec
+	if editor == "" {
+		if runtime.GOOS == "windows" {
+			editor = "notepad.exe"
+		} else {
+			editor = "vi"
+		}
+	}
+	editorArgs, err := parseEditorCommand(editor)
+	if err != nil {
+		return err
+	}
+	editorCmd := exec.Command(editorArgs[0], append(editorArgs[1:], ef.path())...) //nolint:gosec
+	editorCmd.Env = stripSensitiveEnv(os.Environ(), runtime.GOOS == "windows")
 	editorCmd.Stdin = os.Stdin
 	editorCmd.Stdout = os.Stdout
 	editorCmd.Stderr = os.Stderr
 	if err := editorCmd.Run(); err != nil {
+		if cleanupErr := ef.discardChecked(); cleanupErr != nil {
+			return fmt.Errorf("editor exited with error: %w; cleanup also failed: %v", err, cleanupErr)
+		}
 		return fmt.Errorf("editor exited with error: %w", err)
 	}
 
@@ -259,11 +309,18 @@ func cmdEdit(_ []string) error {
 	if err := v.UnmarshalText(edited); err != nil {
 		return err
 	}
+	if err := validateEnvironment(v); err != nil {
+		return err
+	}
 
 	return vault.Save(path, pw, v)
 }
 
-func cmdEnv(_ []string) error {
+func cmdEnv(args []string) error {
+	shell, err := parseEnvShell(args)
+	if err != nil {
+		return err
+	}
 	path := vaultPath(nil)
 	pw, err := promptPassword("Master password: ")
 	if err != nil {
@@ -275,13 +332,14 @@ func cmdEnv(_ []string) error {
 	if err != nil {
 		return err
 	}
+	if err := validateEnvironment(v); err != nil {
+		return err
+	}
 
 	for _, k := range v.Keys() {
 		val, _ := v.Get(k)
 		envKey := strings.ToUpper(k)
-		// Single-quote the value and escape any embedded single quotes.
-		safeVal := strings.ReplaceAll(val, "'", "'\\''")
-		fmt.Printf("export %s='%s'\n", envKey, safeVal)
+		fmt.Println(formatEnvAssignment(shell, envKey, val))
 	}
 	return nil
 }
@@ -309,6 +367,9 @@ func cmdExec(args []string) error {
 
 	v, err := vault.Load(path, pw)
 	if err != nil {
+		return err
+	}
+	if err := validateEnvironment(v); err != nil {
 		return err
 	}
 
@@ -354,6 +415,9 @@ func buildChildEnv(inherited []string, v *vault.Vault, normalizeKeys bool) []str
 	envMap := make(map[string]string, len(inherited))
 	for _, e := range inherited {
 		k, val, _ := strings.Cut(e, "=")
+		if isSensitiveEnvKey(k, normalizeKeys) {
+			continue
+		}
 		if normalizeKeys {
 			k = strings.ToUpper(k)
 		}
@@ -370,48 +434,212 @@ func buildChildEnv(inherited []string, v *vault.Vault, normalizeKeys bool) []str
 	return env
 }
 
+// stripSensitiveEnv removes authentication-only variables before starting an
+// external process. In particular, child commands never need the master key.
+func stripSensitiveEnv(inherited []string, normalizeKeys bool) []string {
+	env := make([]string, 0, len(inherited))
+	for _, e := range inherited {
+		k, _, _ := strings.Cut(e, "=")
+		if !isSensitiveEnvKey(k, normalizeKeys) {
+			env = append(env, e)
+		}
+	}
+	return env
+}
+
+func isSensitiveEnvKey(key string, caseInsensitive bool) bool {
+	if caseInsensitive {
+		return strings.EqualFold(key, "NILLSEC_PASSWORD")
+	}
+	return key == "NILLSEC_PASSWORD"
+}
+
+// validateEnvironment ensures the vault can be represented unambiguously as
+// process environment variables after nillsec's documented upper-casing.
+func validateEnvironment(v *vault.Vault) error {
+	seen := make(map[string]string, len(v.Keys()))
+	for _, key := range v.Keys() {
+		if !validKeyRe.MatchString(key) {
+			return fmt.Errorf("invalid vault key %q: keys must match [A-Za-z_][A-Za-z0-9_]*", key)
+		}
+		envKey := strings.ToUpper(key)
+		if envKey == "NILLSEC_PASSWORD" {
+			return fmt.Errorf("vault key %q is reserved for nillsec authentication", key)
+		}
+		if previous, ok := seen[envKey]; ok {
+			return fmt.Errorf("vault keys %q and %q both export as %q; rename one of them", previous, key, envKey)
+		}
+		seen[envKey] = key
+		value, _ := v.Get(key)
+		if strings.IndexByte(value, 0) >= 0 {
+			return fmt.Errorf("value for %q contains a NUL byte and cannot be used as an environment variable", key)
+		}
+	}
+	return nil
+}
+
+func parseEnvShell(args []string) (string, error) {
+	shell := "sh"
+	if runtime.GOOS == "windows" {
+		shell = "powershell"
+	}
+
+	if len(args) == 0 {
+		return shell, nil
+	}
+	var requested string
+	switch {
+	case len(args) == 2 && args[0] == "--shell":
+		requested = args[1]
+	case len(args) == 1 && strings.HasPrefix(args[0], "--shell="):
+		requested = strings.TrimPrefix(args[0], "--shell=")
+	default:
+		return "", fmt.Errorf("usage: nillsec env [--shell sh|powershell]")
+	}
+
+	switch strings.ToLower(requested) {
+	case "sh", "bash", "zsh":
+		return "sh", nil
+	case "powershell", "pwsh":
+		return "powershell", nil
+	default:
+		return "", fmt.Errorf("unsupported shell %q (choose sh or powershell)", requested)
+	}
+}
+
+func formatEnvAssignment(shell, key, value string) string {
+	switch shell {
+	case "powershell":
+		return fmt.Sprintf("$env:%s = '%s'", key, strings.ReplaceAll(value, "'", "''"))
+	default:
+		return fmt.Sprintf("export %s='%s'", key, strings.ReplaceAll(value, "'", "'\\''"))
+	}
+}
+
+// parseEditorCommand supports the common VISUAL/EDITOR forms "code --wait"
+// and quoted executable paths without invoking a command shell.
+func parseEditorCommand(command string) ([]string, error) {
+	var args []string
+	var current strings.Builder
+	var quote byte
+	tokenStarted := false
+	flush := func() {
+		if tokenStarted {
+			args = append(args, current.String())
+			current.Reset()
+			tokenStarted = false
+		}
+	}
+
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+				continue
+			}
+			if c == '\\' && i+1 < len(command) && (command[i+1] == quote || command[i+1] == '\\') {
+				i++
+				c = command[i]
+			}
+			current.WriteByte(c)
+			tokenStarted = true
+			continue
+		}
+
+		switch c {
+		case '\'', '"':
+			quote = c
+			tokenStarted = true
+		case ' ', '\t', '\r', '\n':
+			flush()
+		case '\\':
+			if i+1 < len(command) && (command[i+1] == ' ' || command[i+1] == '\t' || command[i+1] == '\'' || command[i+1] == '"') {
+				i++
+				current.WriteByte(command[i])
+			} else {
+				current.WriteByte(c)
+			}
+			tokenStarted = true
+		default:
+			current.WriteByte(c)
+			tokenStarted = true
+		}
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("invalid editor command %q: unclosed quote", command)
+	}
+	flush()
+	if len(args) == 0 || args[0] == "" {
+		return nil, errors.New("editor command must not be empty")
+	}
+	return args, nil
+}
+
 // lookPathInEnv resolves an executable name against the PATH entry found in
 // childEnv, so that a vault-provided PATH override is honoured at lookup time
 // rather than the current process PATH. If name contains a path separator it
 // is returned unchanged. Falls back to exec.LookPath when childEnv has no PATH.
 func lookPathInEnv(name string, childEnv []string) (string, error) {
-	// Explicit or relative path – no directory search needed.
+	// Explicit or relative path: no directory search needed.
 	if strings.ContainsRune(name, os.PathSeparator) || (runtime.GOOS == "windows" && strings.ContainsRune(name, '/')) {
 		return name, nil
 	}
 
-	// Extract PATH from the child environment.
-	for _, e := range childEnv {
-		k, v, ok := strings.Cut(e, "=")
-		if !ok {
-			continue
+	pathValue, hasPath := environmentValue(childEnv, "PATH", runtime.GOOS == "windows")
+	if hasPath {
+		names := []string{name}
+		if runtime.GOOS == "windows" && filepath.Ext(name) == "" {
+			pathExt, ok := environmentValue(childEnv, "PATHEXT", true)
+			if !ok || pathExt == "" {
+				pathExt = ".COM;.EXE;.BAT;.CMD"
+			}
+			for _, ext := range filepath.SplitList(pathExt) {
+				ext = strings.TrimSpace(ext)
+				if ext == "" {
+					continue
+				}
+				if ext[0] != '.' {
+					ext = "." + ext
+				}
+				names = append(names, name+ext)
+			}
 		}
-		keyMatches := k == "PATH"
-		if runtime.GOOS == "windows" {
-			keyMatches = strings.EqualFold(k, "PATH")
-		}
-		if !keyMatches {
-			continue
-		}
+
 		// Search each directory in the child PATH for an executable.
-		for _, dir := range filepath.SplitList(v) {
+		for _, dir := range filepath.SplitList(pathValue) {
 			if dir == "" {
 				dir = "."
 			}
-			candidate := filepath.Join(dir, name)
-			fi, err := os.Stat(candidate)
-			if err != nil || fi.IsDir() {
-				continue
+			for _, candidateName := range names {
+				candidate := filepath.Join(dir, candidateName)
+				fi, err := os.Stat(candidate)
+				if err != nil || fi.IsDir() {
+					continue
+				}
+				if runtime.GOOS != "windows" && fi.Mode()&0o111 == 0 {
+					continue // not executable on Unix
+				}
+				return candidate, nil
 			}
-			if runtime.GOOS != "windows" && fi.Mode()&0111 == 0 {
-				continue // not executable on Unix
-			}
-			return candidate, nil
 		}
 		return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
 	}
 	// No PATH in child env; fall back to current process PATH.
 	return exec.LookPath(name)
+}
+
+func environmentValue(env []string, name string, caseInsensitive bool) (string, bool) {
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if key == name || (caseInsensitive && strings.EqualFold(key, name)) {
+			return value, true
+		}
+	}
+	return "", false
 }
 
 // vaultPath returns the vault file path from args, NILLSEC_VAULT env var,
@@ -457,7 +685,7 @@ func promptPassword(prompt string) ([]byte, error) {
 		return pw, nil
 	}
 
-	// Non-TTY (piped) – read a line from the shared stdin reader.
+	// Non-TTY (piped): read a line from the shared stdin reader.
 	line, err := stdinReader.ReadString('\n')
 	if err != nil && line == "" {
 		return nil, fmt.Errorf("cannot read password from stdin: %w", err)
@@ -467,6 +695,27 @@ func promptPassword(prompt string) ([]byte, error) {
 		return nil, fmt.Errorf("password must not be empty")
 	}
 	return []byte(pw), nil
+}
+
+// promptSecret reads a secret value without echo on a TTY. For piped input it
+// consumes one line, allowing automation to avoid command-line arguments.
+func promptSecret(prompt string) (string, error) {
+	if term.IsTerminal(int(syscall.Stdin)) {
+		fmt.Fprint(os.Stderr, prompt)
+		value, err := term.ReadPassword(int(syscall.Stdin))
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return "", fmt.Errorf("cannot read secret: %w", err)
+		}
+		defer wipeBytes(value)
+		return string(value), nil
+	}
+
+	line, err := stdinReader.ReadString('\n')
+	if err != nil && line == "" {
+		return "", fmt.Errorf("cannot read secret from stdin: %w", err)
+	}
+	return strings.TrimRight(line, "\r\n"), nil
 }
 
 // promptPasswordConfirm reads a password twice and ensures they match.
@@ -486,6 +735,10 @@ func promptPasswordConfirm() ([]byte, error) {
 		wipeBytes(pw1)
 		return nil, fmt.Errorf("passwords do not match")
 	}
+	if utf8.RuneCount(pw1) < 12 {
+		wipeBytes(pw1)
+		return nil, fmt.Errorf("master password must be at least 12 characters")
+	}
 	return pw1, nil
 }
 
@@ -497,17 +750,17 @@ func wipeBytes(b []byte) {
 }
 
 func printUsage() {
-	fmt.Fprint(os.Stderr, `nillsec – encrypted project-secret vault
+	fmt.Fprint(os.Stderr, `nillsec: encrypted project-secret vault
 
 Usage:
-  nillsec init                  create a new vault (secrets.vault)
-  nillsec add  <key> <value>    add a secret (error if key already exists)
-  nillsec set  <key> <value>    add or overwrite a secret
+  nillsec init [path]           create a new vault (secrets.vault)
+  nillsec add  <key> [value]    add a secret; omit value for a secure prompt
+  nillsec set  <key> [value]    add or overwrite; omit value for a secure prompt
   nillsec get  <key>            print a secret value
   nillsec list                  list secret keys (no values)
   nillsec remove <key>          delete a secret
   nillsec edit                  open vault contents in $EDITOR
-  nillsec env                   print secrets as export statements
+  nillsec env [--shell SHELL]   print sh or PowerShell environment assignments
   nillsec exec [--] <cmd> ...   run a command with secrets injected as env vars
   nillsec upgrade               upgrade nillsec to the latest release
   nillsec version               print version
@@ -515,6 +768,6 @@ Usage:
 Environment:
   NILLSEC_VAULT    vault file path (default: secrets.vault)
   NILLSEC_PASSWORD master password (optional; if set, prompts may be skipped)
-  EDITOR           editor used by 'edit' command (default: vi)
+  VISUAL, EDITOR   editor used by 'edit' (default: vi; notepad.exe on Windows)
 `)
 }

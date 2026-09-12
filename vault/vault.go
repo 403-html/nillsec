@@ -2,6 +2,7 @@
 package vault
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -9,7 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -19,7 +22,7 @@ import (
 const (
 	vaultHeader = "$VAULT;1"
 
-	// Argon2id KDF parameters – tuned for interactive use.
+	// Argon2id KDF parameters, tuned for interactive use.
 	argonTime    = 3
 	argonMemory  = 64 * 1024 // 64 MiB
 	argonThreads = 4
@@ -27,6 +30,10 @@ const (
 
 	saltSize  = 16 // 128-bit salt
 	nonceSize = 12 // 96-bit GCM nonce (standard)
+
+	// Vaults are intended for environment-sized secrets, not arbitrary files.
+	// Bounding input prevents a malicious or mistaken path from exhausting memory.
+	maxVaultFileBytes = 16 << 20
 )
 
 // payload is the plaintext structure stored inside the encrypted vault.
@@ -84,7 +91,15 @@ func (v *Vault) MarshalText() ([]byte, error) {
 // MarshalText. Used by the edit command after the user saves the file.
 func (v *Vault) UnmarshalText(data []byte) error {
 	var p payload
-	if err := json.Unmarshal(data, &p); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err != nil {
+		return fmt.Errorf("invalid vault content: %w", err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("invalid vault content: trailing data")
+	}
+	if err := validatePayload(p); err != nil {
 		return fmt.Errorf("invalid vault content: %w", err)
 	}
 	v.data = p
@@ -94,18 +109,33 @@ func (v *Vault) UnmarshalText(data []byte) error {
 // Init creates a new, empty, encrypted vault file at path.
 // It returns an error if the file already exists.
 func Init(path string, password []byte) error {
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("vault already exists: %s", path)
-	}
 	v := &Vault{data: payload{Version: 1, Secrets: make(map[string]string)}}
-	return Save(path, password, v)
+	raw, err := encryptVault(password, v)
+	if err != nil {
+		return err
+	}
+	return writeNewVault(path, raw)
 }
 
 // Load reads and decrypts the vault at path using password.
 func Load(path string, password []byte) (*Vault, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("cannot inspect vault: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("cannot read vault: %s is not a regular file", path)
+	}
+	if info.Size() > maxVaultFileBytes {
+		return nil, fmt.Errorf("cannot read vault: file is larger than %d bytes", maxVaultFileBytes)
+	}
+
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read vault: %w", err)
+	}
+	if len(raw) > maxVaultFileBytes {
+		return nil, fmt.Errorf("cannot read vault: file is larger than %d bytes", maxVaultFileBytes)
 	}
 
 	salt, nonce, ciphertext, err := parseVaultFile(raw)
@@ -126,6 +156,9 @@ func Load(path string, password []byte) (*Vault, error) {
 	if err := json.Unmarshal(plaintext, &p); err != nil {
 		return nil, fmt.Errorf("corrupt vault payload: %w", err)
 	}
+	if err := validatePayload(p); err != nil {
+		return nil, fmt.Errorf("corrupt vault payload: %w", err)
+	}
 
 	return &Vault{data: p}, nil
 }
@@ -133,15 +166,39 @@ func Load(path string, password []byte) (*Vault, error) {
 // Save encrypts the vault and writes it to path.
 // A fresh random salt and nonce are generated on every call.
 func Save(path string, password []byte, v *Vault) error {
+	raw, err := encryptVault(password, v)
+	if err != nil {
+		return err
+	}
+
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return writeNewVault(path, raw)
+	}
+	if err != nil {
+		return fmt.Errorf("cannot inspect vault: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to replace non-regular vault file: %s", path)
+	}
+
+	return replaceVault(path, raw)
+}
+
+// encryptVault serialises and encrypts a vault without touching the filesystem.
+func encryptVault(password []byte, v *Vault) ([]byte, error) {
+	if err := validatePayload(v.data); err != nil {
+		return nil, fmt.Errorf("invalid vault payload: %w", err)
+	}
 	plaintext, err := json.Marshal(v.data)
 	if err != nil {
-		return fmt.Errorf("marshal error: %w", err)
+		return nil, fmt.Errorf("marshal error: %w", err)
 	}
 	defer wipe(plaintext)
 
 	salt := make([]byte, saltSize)
 	if _, err := rand.Read(salt); err != nil {
-		return fmt.Errorf("cannot generate salt: %w", err)
+		return nil, fmt.Errorf("cannot generate salt: %w", err)
 	}
 
 	key := deriveKey(password, salt)
@@ -149,11 +206,97 @@ func Save(path string, password []byte, v *Vault) error {
 
 	nonce, ciphertext, err := encrypt(plaintext, key)
 	if err != nil {
-		return fmt.Errorf("encryption error: %w", err)
+		return nil, fmt.Errorf("encryption error: %w", err)
 	}
 
-	raw := formatVaultFile(salt, nonce, ciphertext)
-	return os.WriteFile(path, raw, 0600)
+	return formatVaultFile(salt, nonce, ciphertext), nil
+}
+
+func validatePayload(p payload) error {
+	if p.Version != 1 {
+		return fmt.Errorf("unsupported payload version %d", p.Version)
+	}
+	if p.Secrets == nil {
+		return errors.New("missing secrets object")
+	}
+	return nil
+}
+
+// writeNewVault creates path exclusively. This prevents init from overwriting
+// an existing file or following a dangling symlink between a check and write.
+func writeNewVault(path string, raw []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("vault already exists: %s", path)
+		}
+		return fmt.Errorf("cannot create vault: %w", err)
+	}
+
+	ok := false
+	defer func() {
+		_ = f.Close()
+		if !ok {
+			_ = os.Remove(path)
+		}
+	}()
+	if err := writeAndSync(f, raw); err != nil {
+		return fmt.Errorf("cannot write vault: %w", err)
+	}
+	ok = true
+	return nil
+}
+
+// replaceVault writes the complete ciphertext to a private file in the same
+// directory, then atomically renames it over the old vault.
+func replaceVault(path string, raw []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".nillsec-vault-*")
+	if err != nil {
+		return fmt.Errorf("cannot create temporary vault: %w", err)
+	}
+	tmpName := tmp.Name()
+	ok := false
+	defer func() {
+		_ = tmp.Close()
+		if !ok {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if err := writeAndSync(tmp, raw); err != nil {
+		return fmt.Errorf("cannot write temporary vault: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("cannot replace vault: %w", err)
+	}
+	ok = true
+	syncDirectory(dir)
+	return nil
+}
+
+func writeAndSync(f *os.File, data []byte) error {
+	if err := f.Chmod(0o600); err != nil {
+		return fmt.Errorf("setting private permissions: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// syncDirectory is best-effort: some platforms (notably Windows) cannot sync
+// directory handles, while the file itself has already been flushed safely.
+func syncDirectory(path string) {
+	dir, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer dir.Close()
+	_ = dir.Sync()
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +382,12 @@ func parseVaultFile(raw []byte) (salt, nonce, ciphertext []byte, err error) {
 			fields[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 		}
 	}
+	if fields["kdf"] != "argon2id" {
+		return nil, nil, nil, fmt.Errorf("unsupported kdf %q", fields["kdf"])
+	}
+	if fields["cipher"] != "aes-256-gcm" {
+		return nil, nil, nil, fmt.Errorf("unsupported cipher %q", fields["cipher"])
+	}
 
 	enc := base64.StdEncoding
 	decode := func(name string) ([]byte, error) {
@@ -268,6 +417,10 @@ func parseVaultFile(raw []byte) (salt, nonce, ciphertext []byte, err error) {
 		return
 	}
 	if ciphertext, err = decode("data"); err != nil {
+		return
+	}
+	if len(ciphertext) < 16 {
+		err = errors.New("ciphertext is too short")
 		return
 	}
 	return

@@ -25,7 +25,10 @@ jobs:
           cache: true
 
       - name: Run tests
-        run: go test ./... -v -count=1
+        run: go test -race ./... -v -count=1
+
+      - name: Run static analysis
+        run: go vet ./...
 
   # -----------------------------------------------------------------------
   # Cross-compile for every target platform and collect the binaries.
