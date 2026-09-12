@@ -97,6 +97,19 @@ nillsec upgrade
 
 The updater verifies the selected artifact against the release's `checksums.txt`, rejects malformed or oversized downloads, and installs only a newer semantic version. Major upgrades require confirmation.
 
+## Comparison
+
+| Approach | Repository content | Access model | Best fit | Main tradeoff |
+|---|---|---|---|---|
+| **nillsec** | One encrypted vault | Shared master password | Local development and small teams that need fast environment injection | Password distribution and rotation are manual |
+| Plain `.env` | Plaintext configuration | File access | Local, non-sensitive configuration | No encryption at rest |
+| [dotenvx](https://dotenvx.com/) | Encrypted `.env` files | Separate private key | Teams keeping the dotenv workflow | Requires a separate key lifecycle |
+| [SOPS](https://github.com/getsops/sops) | Structured encrypted files | age, PGP, or cloud KMS | Infrastructure configuration and multi-key teams | More setup and key-provider concepts |
+| [git-crypt](https://github.com/AGWA/git-crypt) | Selected files encrypted through Git filters | GPG users or a shared key | Transparent encryption of repository files | Git-specific setup; not focused on environment injection |
+| Managed secrets service | Centrally stored secrets | Accounts, policies, and machine identities | Teams needing audit logs, access control, and rotation | External service and operational dependency |
+
+Nillsec is intentionally narrow. Use it when encrypted secrets should travel with a repository and be injected locally without an external service. Prefer a managed service when centralized revocation, auditing, or automated rotation is required.
+
 ## Configuration
 
 | Variable | Description | Default |
